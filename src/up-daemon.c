@@ -576,42 +576,6 @@ up_daemon_get_device_list (UpDaemon *daemon)
 }
 
 /**
- * up_daemon_set_lid_is_closed:
- **/
-void
-up_daemon_set_lid_is_closed (UpDaemon *daemon, gboolean lid_is_closed)
-{
-	UpDaemonPrivate *priv = daemon->priv;
-
-	/* check if we are ignoring the lid */
-	if (up_config_get_boolean (priv->config, "IgnoreLid")) {
-		g_debug ("ignoring lid state");
-		return;
-	}
-
-	g_debug ("lid_is_closed = %s", lid_is_closed ? "yes" : "no");
-	up_exported_daemon_set_lid_is_closed (UP_EXPORTED_DAEMON (daemon), lid_is_closed);
-}
-
-/**
- * up_daemon_set_lid_is_present:
- **/
-void
-up_daemon_set_lid_is_present (UpDaemon *daemon, gboolean lid_is_present)
-{
-	UpDaemonPrivate *priv = daemon->priv;
-
-	/* check if we are ignoring the lid */
-	if (up_config_get_boolean (priv->config, "IgnoreLid")) {
-		g_debug ("ignoring lid state");
-		return;
-	}
-
-	g_debug ("lid_is_present = %s", lid_is_present ? "yes" : "no");
-	up_exported_daemon_set_lid_is_present (UP_EXPORTED_DAEMON (daemon), lid_is_present);
-}
-
-/**
  * up_daemon_set_on_battery:
  **/
 void
@@ -966,9 +930,6 @@ up_daemon_device_added_cb (UpBackend *backend, UpDevice *device, UpDaemon *daemo
 	g_signal_connect (device, "notify",
 			  G_CALLBACK (up_daemon_device_changed_cb), daemon);
 
-	/* Ensure we poll the new device if needed */
-	g_source_set_ready_time (daemon->priv->poll_source, 0);
-
 	/* emit */
 	object_path = up_device_get_object_path (device);
 	if (object_path == NULL) {
@@ -976,6 +937,9 @@ up_daemon_device_added_cb (UpBackend *backend, UpDevice *device, UpDaemon *daemo
 			 up_exported_device_get_native_path (UP_EXPORTED_DEVICE (device)));
 		return;
 	}
+
+	/* Ensure we poll the new device if needed */
+	g_source_set_ready_time (daemon->priv->poll_source, 0);
 
 	g_debug ("emitting added: %s", object_path);
 	up_daemon_update_warning_level (daemon);

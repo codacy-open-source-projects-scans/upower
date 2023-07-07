@@ -40,7 +40,6 @@
 #include "up-device-wup.h"
 #include "up-device-hid.h"
 #include "up-device-bluez.h"
-#include "up-input.h"
 #include "up-config.h"
 #ifdef HAVE_IDEVICE
 #include "up-device-idevice.h"
@@ -59,7 +58,6 @@ struct UpBackendPrivate
 	UpDaemon		*daemon;
 	UpDeviceList		*device_list;
 	GUdevClient		*gudev_client;
-	UpInput			*lid_device;
 	UpConfig		*config;
 	GDBusProxy		*logind_proxy;
 	guint                    logind_sleep_id;
@@ -81,40 +79,6 @@ enum {
 static guint signals [SIGNAL_LAST] = { 0 };
 
 G_DEFINE_TYPE_WITH_PRIVATE (UpBackend, up_backend, G_TYPE_OBJECT)
-
-static void
-input_switch_changed_cb (UpInput   *input,
-			 gboolean   switch_value,
-			 UpBackend *backend)
-{
-	up_daemon_set_lid_is_closed (backend->priv->daemon, switch_value);
-}
-
-static void
-up_backend_uevent_signal_handler_cb (GUdevClient *client, const gchar *action,
-				      GUdevDevice *device, gpointer user_data)
-{
-	UpBackend *backend = UP_BACKEND (user_data);
-	g_autoptr(UpInput) input = NULL;
-
-	if (backend->priv->lid_device)
-		return;
-
-	if (g_strcmp0 (action, "add") != 0)
-		return;
-
-	/* check if the input device is a lid */
-	input = up_input_new ();
-	if (up_input_coldplug (input, device)) {
-		up_daemon_set_lid_is_present (backend->priv->daemon, TRUE);
-		g_signal_connect (G_OBJECT (input), "switch-changed",
-				  G_CALLBACK (input_switch_changed_cb), backend);
-		up_daemon_set_lid_is_closed (backend->priv->daemon,
-					     up_input_get_switch_value (input));
-
-		backend->priv->lid_device = g_steal_pointer (&input);
-	}
-}
 
 static UpDevice *
 find_duplicate_device (UpBackend *backend,
@@ -148,7 +112,8 @@ find_duplicate_device (UpBackend *backend,
 	return ret;
 }
 
-static void
+/* Returns TRUE if the added_device should be visible */
+static gboolean
 update_added_duplicate_device (UpBackend *backend,
 			       UpDevice  *added_device)
 {
@@ -159,7 +124,7 @@ update_added_duplicate_device (UpBackend *backend,
 
 	other_device = find_duplicate_device (backend, added_device);
 	if (!other_device)
-		return;
+		return TRUE;
 
 	if (UP_IS_DEVICE_BLUEZ (added_device))
 		bluez_device = added_device;
@@ -189,15 +154,19 @@ update_added_duplicate_device (UpBackend *backend,
 			g_object_get (G_OBJECT (added_device), "serial", &serial, NULL);
 			g_debug ("Device %s is a duplicate, but we don't know if most interesting",
 				 serial);
-			return;
+			return TRUE;
 		}
 
 		unreg_device = tested_device;
 	}
 
 	g_object_get (G_OBJECT (unreg_device), "serial", &serial, NULL);
-	up_device_unregister (unreg_device);
+	if (up_device_is_registered (unreg_device)) {
+		g_signal_emit (backend, signals[SIGNAL_DEVICE_REMOVED], 0, unreg_device);
+		up_device_unregister (unreg_device);
+	}
 	g_debug ("Hiding duplicate device %s", serial);
+	return unreg_device != added_device;
 }
 
 static void
@@ -211,7 +180,8 @@ update_removed_duplicate_device (UpBackend *backend,
 		return;
 
 	/* Re-add the old duplicate device that got hidden */
-	up_device_register (other_device);
+	if (up_device_register (other_device))
+		g_signal_emit (backend, signals[SIGNAL_DEVICE_ADDED], 0, other_device);
 }
 
 static gboolean
@@ -278,7 +248,8 @@ bluez_interface_removed (GDBusObjectManager *manager,
 		return;
 
 	g_debug ("emitting device-removed: %s", g_dbus_object_get_object_path (bus_object));
-	g_signal_emit (backend, signals[SIGNAL_DEVICE_REMOVED], 0, UP_DEVICE (object));
+	if (up_device_is_registered (UP_DEVICE (object)))
+		g_signal_emit (backend, signals[SIGNAL_DEVICE_REMOVED], 0, UP_DEVICE (object));
 
 	g_object_unref (object);
 }
@@ -308,8 +279,8 @@ bluez_interface_added (GDBusObjectManager *manager,
 	                         NULL);
 	if (device) {
 		g_debug ("emitting device-added: %s", g_dbus_object_get_object_path (bus_object));
-		update_added_duplicate_device (backend, device);
-		g_signal_emit (backend, signals[SIGNAL_DEVICE_ADDED], 0, device);
+		if (update_added_duplicate_device (backend, device))
+			g_signal_emit (backend, signals[SIGNAL_DEVICE_ADDED], 0, device);
 	}
 }
 
@@ -389,7 +360,8 @@ bluez_vanished (GDBusConnection *connection,
 
 			object = G_DBUS_OBJECT (up_device_get_native (device));
 			g_debug ("emitting device-removed: %s", g_dbus_object_get_object_path (object));
-			g_signal_emit (backend, signals[SIGNAL_DEVICE_REMOVED], 0, device);
+			if (up_device_is_registered (device))
+				g_signal_emit (backend, signals[SIGNAL_DEVICE_REMOVED], 0, device);
 		}
 	}
 
@@ -399,11 +371,39 @@ bluez_vanished (GDBusConnection *connection,
 }
 
 static void
+up_device_disconnected_cb (GObject    *gobject,
+			   GParamSpec *pspec,
+			   gpointer    user_data)
+{
+	UpBackend *backend = user_data;
+	g_autofree char *path = NULL;
+	gboolean disconnected;
+
+	g_object_get (gobject,
+		      "native-path", &path,
+		      "disconnected", &disconnected,
+		      NULL);
+	if (disconnected) {
+		g_debug("Device %s became disconnected, hiding device", path);
+		if (up_device_is_registered (UP_DEVICE (gobject))) {
+			g_signal_emit (backend, signals[SIGNAL_DEVICE_REMOVED], 0, gobject);
+			up_device_unregister (UP_DEVICE (gobject));
+		}
+	} else {
+		g_debug ("Device %s became connected, showing device", path);
+		if (up_device_register (UP_DEVICE (gobject)))
+			g_signal_emit (backend, signals[SIGNAL_DEVICE_ADDED], 0, gobject);
+	}
+}
+
+static void
 udev_device_added_cb (UpBackend *backend, UpDevice *device)
 {
 	g_debug ("Got new device from udev enumerator: %p", device);
-	update_added_duplicate_device (backend, device);
-	g_signal_emit (backend, signals[SIGNAL_DEVICE_ADDED], 0, device);
+	g_signal_connect (device, "notify::disconnected",
+			  G_CALLBACK (up_device_disconnected_cb), backend);
+	if (update_added_duplicate_device (backend, device))
+		g_signal_emit (backend, signals[SIGNAL_DEVICE_ADDED], 0, device);
 }
 
 static void
@@ -427,24 +427,8 @@ udev_device_removed_cb (UpBackend *backend, UpDevice *device)
 gboolean
 up_backend_coldplug (UpBackend *backend, UpDaemon *daemon)
 {
-	g_autolist(GUdevDevice) devices = NULL;
-	GList *l;
-
 	backend->priv->daemon = g_object_ref (daemon);
 	backend->priv->device_list = up_daemon_get_device_list (daemon);
-
-	/* Watch udev for input devices to find the lid switch */
-	backend->priv->gudev_client = g_udev_client_new ((const char *[]){ "input", NULL });
-	g_signal_connect (backend->priv->gudev_client, "uevent",
-			  G_CALLBACK (up_backend_uevent_signal_handler_cb), backend);
-
-	/* add all subsystems */
-	devices = g_udev_client_query_by_subsystem (backend->priv->gudev_client, "input");
-	for (l = devices; l != NULL; l = l->next)
-		up_backend_uevent_signal_handler_cb (backend->priv->gudev_client,
-						     "add",
-						     G_UDEV_DEVICE (l->data),
-						     backend);
 
 	backend->priv->bluez_watch_id = g_bus_watch_name (G_BUS_TYPE_SYSTEM,
 							  "org.bluez",
@@ -481,7 +465,6 @@ up_backend_unplug (UpBackend *backend)
 	g_clear_object (&backend->priv->gudev_client);
 	g_clear_object (&backend->priv->udev_enum);
 	g_clear_object (&backend->priv->device_list);
-	g_clear_object (&backend->priv->lid_device);
 	g_clear_object (&backend->priv->daemon);
 	if (backend->priv->bluez_watch_id > 0) {
 		g_bus_unwatch_name (backend->priv->bluez_watch_id);
@@ -791,8 +774,6 @@ up_backend_finalize (GObject *object)
 		close (backend->priv->logind_delay_inhibitor_fd);
 
 	g_clear_object (&backend->priv->logind_proxy);
-
-	g_clear_object (&backend->priv->lid_device);
 
 	G_OBJECT_CLASS (up_backend_parent_class)->finalize (object);
 }

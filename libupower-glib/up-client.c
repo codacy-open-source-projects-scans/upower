@@ -63,8 +63,6 @@ enum {
 	PROP_0,
 	PROP_DAEMON_VERSION,
 	PROP_ON_BATTERY,
-	PROP_LID_IS_CLOSED,
-	PROP_LID_IS_PRESENT,
 	PROP_LAST
 };
 
@@ -74,28 +72,6 @@ G_DEFINE_TYPE_WITH_CODE (UpClient, up_client, G_TYPE_OBJECT,
 			 G_ADD_PRIVATE(UpClient)
                          G_IMPLEMENT_INTERFACE(G_TYPE_INITABLE, up_client_initable_iface_init)
                          G_IMPLEMENT_INTERFACE (G_TYPE_ASYNC_INITABLE, up_client_async_initable_iface_init))
-
-/**
- * up_client_get_devices:
- * @client: a #UpClient instance.
- *
- * Get a copy of the device objects. This function does not set the free
- * function for the #GPtrArray so you need use g_object_unref on all
- * elements when you are finished with the array.
- *
- * Return value: (element-type UpDevice) (transfer full): an array of #UpDevice objects or %NULL on error, free with g_ptr_array_unref()
- *
- * Since: 0.9.0
- * Deprecated: 0.99.8
- **/
-GPtrArray *
-up_client_get_devices (UpClient *client)
-{
-	GPtrArray *array = up_client_get_devices2 (client);
-	if (array)
-		g_ptr_array_set_free_func (array, NULL);
-	return array;
-}
 
 static GPtrArray *
 up_client_get_devices_full (UpClient      *client,
@@ -133,7 +109,7 @@ up_client_get_devices_full (UpClient      *client,
 }
 
 /**
- * up_client_get_devices2:
+ * up_client_get_devices:
  * @client: a #UpClient instance.
  *
  * Get a copy of the device objects.
@@ -143,7 +119,7 @@ up_client_get_devices_full (UpClient      *client,
  * Since: 0.99.8
  **/
 GPtrArray *
-up_client_get_devices2 (UpClient *client)
+up_client_get_devices (UpClient *client)
 {
 	g_autoptr(GError) error = NULL;
 	GPtrArray *ret = NULL;
@@ -288,40 +264,6 @@ up_client_get_daemon_version (UpClient *client)
 }
 
 /**
- * up_client_get_lid_is_closed:
- * @client: a #UpClient instance.
- *
- * Get whether the laptop lid is closed.
- *
- * Return value: %TRUE if lid is closed or %FALSE otherwise.
- *
- * Since: 0.9.0
- */
-gboolean
-up_client_get_lid_is_closed (UpClient *client)
-{
-	g_return_val_if_fail (UP_IS_CLIENT (client), FALSE);
-	return up_exported_daemon_get_lid_is_closed (client->priv->proxy);
-}
-
-/**
- * up_client_get_lid_is_present:
- * @client: a #UpClient instance.
- *
- * Get whether a laptop lid is present on this machine.
- *
- * Return value: %TRUE if the machine has a laptop lid
- *
- * Since: 0.9.2
- */
-gboolean
-up_client_get_lid_is_present (UpClient *client)
-{
-	g_return_val_if_fail (UP_IS_CLIENT (client), FALSE);
-	return up_exported_daemon_get_lid_is_present (client->priv->proxy);
-}
-
-/**
  * up_client_get_on_battery:
  * @client: a #UpClient instance.
  *
@@ -414,12 +356,6 @@ up_client_get_property (GObject *object,
 	case PROP_ON_BATTERY:
 		g_value_set_boolean (value, up_exported_daemon_get_on_battery (client->priv->proxy));
 		break;
-	case PROP_LID_IS_CLOSED:
-		g_value_set_boolean (value, up_exported_daemon_get_lid_is_closed (client->priv->proxy));
-		break;
-	case PROP_LID_IS_PRESENT:
-		g_value_set_boolean (value, up_exported_daemon_get_lid_is_present (client->priv->proxy));
-		break;
 	default:
 		G_OBJECT_WARN_INVALID_PROPERTY_ID (object, prop_id, pspec);
 		break;
@@ -466,34 +402,6 @@ up_client_class_init (UpClientClass *klass)
 							       NULL,
 							       FALSE,
 							       G_PARAM_READABLE));
-	/**
-	 * UpClient:lid-is-closed:
-	 *
-	 * If the laptop lid is closed.
-	 *
-	 * Since: 0.9.0
-	 */
-	g_object_class_install_property (object_class,
-					 PROP_LID_IS_CLOSED,
-					 g_param_spec_boolean ("lid-is-closed",
-							       "If the laptop lid is closed",
-							       NULL,
-							       FALSE,
-							       G_PARAM_READABLE | G_PARAM_DEPRECATED));
-	/**
-	 * UpClient:lid-is-present:
-	 *
-	 * If a laptop lid is present.
-	 *
-	 * Since: 0.9.0
-	 */
-	g_object_class_install_property (object_class,
-					 PROP_LID_IS_PRESENT,
-					 g_param_spec_boolean ("lid-is-present",
-							       "If a laptop lid is present",
-							       NULL,
-							       FALSE,
-							       G_PARAM_READABLE | G_PARAM_DEPRECATED));
 
 	/**
 	 * UpClient::device-added:

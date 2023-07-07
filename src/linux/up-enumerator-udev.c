@@ -161,6 +161,46 @@ device_new (UpEnumeratorUdev *self, GUdevDevice *native)
 	}
 }
 
+/* As GUdevDevice are static and do not update when the sysfs device
+ * changes, this helps get a GUdevDevice with updated properties */
+static GUdevDevice *
+get_latest_udev_device (UpEnumeratorUdev *self,
+                        GObject          *obj)
+{
+	const char *sysfs_path;
+
+	sysfs_path = g_udev_device_get_sysfs_path (G_UDEV_DEVICE (obj));
+	return g_udev_client_query_by_sysfs_path (self->udev, sysfs_path);
+}
+
+static void
+emit_changes_for_siblings (UpEnumeratorUdev *self,
+			   GUdevDevice      *device)
+{
+	GPtrArray *devices = NULL;
+	g_autofree char *parent_id = NULL;
+	char *parent_id_key = NULL;
+	int i;
+
+	parent_id = device_parent_id (device);
+	if (!parent_id)
+		return;
+
+	g_hash_table_lookup_extended (self->siblings, parent_id,
+				      (gpointer*)&parent_id_key, (gpointer*)&devices);
+	if (!devices)
+		return;
+
+	for (i = 0; i < devices->len; i++) {
+		GObject *sibling = g_ptr_array_index (devices, i);
+
+		if (UP_IS_DEVICE (sibling)) {
+			up_device_sibling_discovered (UP_DEVICE (sibling), G_OBJECT (device));
+			break;
+		}
+	}
+}
+
 static void
 uevent_signal_handler_cb (UpEnumeratorUdev *self,
                           const gchar      *action,
@@ -168,6 +208,8 @@ uevent_signal_handler_cb (UpEnumeratorUdev *self,
                           GUdevClient      *client)
 {
 	const char *device_key = g_udev_device_get_sysfs_path (device);
+
+	g_debug ("Received uevent %s on device %s", action, device_key);
 
 	/* Work around the fact that we don't get a REMOVE event in some cases. */
 	if (g_strcmp0 (g_udev_device_get_subsystem (device), "power_supply") == 0)
@@ -222,8 +264,11 @@ uevent_signal_handler_cb (UpEnumeratorUdev *self,
 				for (i = 0; i < devices->len; i++) {
 					GObject *sibling = g_ptr_array_index (devices, i);
 
-					if (up_dev)
-						up_device_sibling_discovered (up_dev, sibling);
+					if (up_dev) {
+						g_autoptr(GUdevDevice) d = get_latest_udev_device (self, sibling);
+						if (d)
+							up_device_sibling_discovered (up_dev, G_OBJECT (d));
+					}
 					if (UP_IS_DEVICE (sibling))
 						up_device_sibling_discovered (UP_DEVICE (sibling), obj);
 				}
@@ -242,8 +287,12 @@ uevent_signal_handler_cb (UpEnumeratorUdev *self,
 				g_signal_emit_by_name (self, "device-added", up_dev);
 
 		} else {
-			if (!UP_IS_DEVICE (obj))
+			if (!UP_IS_DEVICE (obj)) {
+				g_autoptr(GUdevDevice) d = get_latest_udev_device (self, obj);
+				if (d)
+					emit_changes_for_siblings (self, d);
 				return;
+			}
 
 			g_debug ("refreshing device for path %s", g_udev_device_get_sysfs_path (device));
 			if (!up_device_refresh_internal (UP_DEVICE (obj), UP_REFRESH_EVENT))

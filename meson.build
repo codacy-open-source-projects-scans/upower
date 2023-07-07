@@ -1,5 +1,5 @@
 project('upower', 'c',
-    version: '1.90.0',
+    version: '1.90.2',
     license: 'GPLv2+',
     default_options: [
         'buildtype=debugoptimized',
@@ -8,8 +8,8 @@ project('upower', 'c',
     ],
     meson_version: '>= 0.56.0')
 
-soversion = 3
-current = 1
+soversion = 4
+current = 0
 revision = 0
 libversion = '@0@.@1@.@2@'.format(soversion, current, revision)
 
@@ -69,7 +69,7 @@ gobject_introspection = dependency('gobject-introspection-1.0', required: get_op
 
 
 if os_backend == 'linux'
-  gudev_dep = dependency('gudev-1.0', version: '>= 235')
+  gudev_dep = dependency('gudev-1.0', version: '>= 238')
   idevice_dep = dependency('libimobiledevice-1.0',
                            version : '>= 0.9.7',
                            required : get_option('idevice'))
@@ -81,23 +81,23 @@ if os_backend == 'linux'
     endif
     cdata.set10('HAVE_IDEVICE', true)
   endif
+
+  udevrulesdir = get_option('udevrulesdir')
+  if udevrulesdir == 'auto'
+    udev_dep = dependency('udev', required: true)
+    udevrulesdir = udev_dep.get_variable(pkgconfig: 'udev_dir') / 'rules.d'
+  endif
+
+  udevhwdbdir = get_option('udevhwdbdir')
+  if udevhwdbdir == 'auto'
+    udev_dep = dependency('udev', required: true)
+    udevhwdbdir = udev_dep.get_variable(pkgconfig: 'udev_dir') / 'hwdb.d'
+  endif
 endif
 
 historydir = get_option('historydir')
 if historydir == ''
     historydir = get_option('prefix') / get_option('localstatedir') / 'lib' / 'upower'
-endif
-
-udevrulesdir = get_option('udevrulesdir')
-if udevrulesdir == 'auto'
-    udev_dep = dependency('udev', required: true)
-    udevrulesdir = udev_dep.get_variable(pkgconfig: 'udev_dir') / 'rules.d'
-endif
-
-udevhwdbdir = get_option('udevhwdbdir')
-if udevhwdbdir == 'auto'
-    udev_dep = dependency('udev', required: true)
-    udevhwdbdir = udev_dep.get_variable(pkgconfig: 'udev_dir') / 'hwdb.d'
 endif
 
 dbusdir = get_option('datadir') / 'dbus-1'
