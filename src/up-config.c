@@ -94,9 +94,11 @@ up_config_class_init (UpConfigClass *klass)
 static void
 up_config_init (UpConfig *config)
 {
-	gboolean ret;
+	gboolean allow_risky_critical_action = FALSE;
+	g_autofree gchar *critical_action = NULL;
 	GError *error = NULL;
-	gchar *filename;
+	g_autofree gchar *filename = NULL;
+	gboolean ret;
 
 	config->priv = up_config_get_instance_private (config);
 	config->priv->keyfile = g_key_file_new ();
@@ -117,7 +119,24 @@ up_config_init (UpConfig *config)
 		g_error_free (error);
 	}
 
-	g_free (filename);
+	/* Warn for any dangerous configurations */
+	critical_action = up_config_get_string (config, "CriticalPowerAction");
+	allow_risky_critical_action = up_config_get_boolean (config, "AllowRiskyCriticalPowerAction");
+
+	if (!g_strcmp0 (critical_action, "Suspend")) {
+		if (allow_risky_critical_action) {
+			g_warning ("The \"Suspend\" CriticalPowerAction setting is considered risky:"
+				   " abrupt power loss due to battery exhaustion may lead to data"
+				   " corruption. Use AllowRiskyCriticalPowerAction=false to disable"
+				   " support for risky settings.");
+		} else {
+			g_warning ("The \"Suspend\" CriticalPowerAction setting is considered risky:"
+				   " abrupt power loss due to battery exhaustion may lead to data"
+				   " corruption. The system will perform \"HybridSleep\" instead."
+				   " Use AllowRiskyCriticalPowerAction=true to enable support for"
+				   " risky settings.");
+		}
+	}
 }
 
 /**
