@@ -30,6 +30,7 @@
 
 #include "up-config.h"
 #include "up-constants.h"
+#include "up-polkit.h"
 #include "up-device-list.h"
 #include "up-device.h"
 #include "up-backend.h"
@@ -39,6 +40,7 @@ struct UpDaemonPrivate
 {
 	UpConfig		*config;
 	gboolean		 debug;
+	UpPolkit		*polkit;
 	UpBackend		*backend;
 	UpDeviceList		*power_devices;
 	guint			 action_timeout_id;
@@ -67,6 +69,9 @@ struct UpDaemonPrivate
 	guint			 low_time;
 	guint			 critical_time;
 	guint			 action_time;
+
+	/* environment variable override */
+	const char		*state_dir_override;
 };
 
 static void	up_daemon_finalize		(GObject	*object);
@@ -804,6 +809,32 @@ up_daemon_get_charge_icon (UpDaemon     *daemon,
 }
 
 /**
+ * up_daemon_polkit_is_allowed:
+ **/
+gboolean
+up_daemon_polkit_is_allowed (UpDaemon *daemon, const gchar *action_id, GDBusMethodInvocation *invocation)
+{
+#ifdef HAVE_POLKIT
+	g_autoptr (PolkitSubject) subject = NULL;
+	g_autoptr (GError) error = NULL;
+
+	subject = up_polkit_get_subject (daemon->priv->polkit, invocation);
+	if (subject == NULL) {
+		g_debug ("Can't get sender subject");
+		return FALSE;
+	}
+
+	if (!up_polkit_is_allowed (daemon->priv->polkit, subject, action_id, &error)) {
+		if (error != NULL)
+			g_debug ("Error on Polkit check authority: %s", error->message);
+		return FALSE;
+	}
+#endif
+
+	return TRUE;
+}
+
+/**
  * up_daemon_device_changed_cb:
  **/
 static void
@@ -948,6 +979,23 @@ up_daemon_get_debug (UpDaemon *daemon)
 }
 
 /**
+ * up_deamon_get_state_dir_env_override:
+ *
+ * Get UPOWER_STATE_DIR environment variable.
+ **/
+const gchar *
+up_deamon_get_state_dir_env_override (UpDaemon *daemon)
+{
+	return daemon->priv->state_dir_override;
+}
+
+static void
+up_daemon_get_env_override (UpDaemon *self)
+{
+	self->priv->state_dir_override = g_getenv ("UPOWER_STATE_DIR");
+}
+
+/**
  * up_daemon_device_added_cb:
  **/
 static void
@@ -1067,6 +1115,7 @@ up_daemon_init (UpDaemon *daemon)
 	daemon->priv = up_daemon_get_instance_private (daemon);
 
 	daemon->priv->critical_action_lock_fd = -1;
+	daemon->priv->polkit = up_polkit_new ();
 	daemon->priv->config = up_config_new ();
 	daemon->priv->power_devices = up_device_list_new ();
 	daemon->priv->display_device = up_device_new (daemon, NULL);
@@ -1082,6 +1131,8 @@ up_daemon_init (UpDaemon *daemon)
 	load_percentage_policy (daemon, FALSE);
 	load_time_policy (daemon, FALSE);
 	policy_config_validate (daemon);
+
+	up_daemon_get_env_override (daemon);
 
 	daemon->priv->backend = up_backend_new ();
 	g_signal_connect (daemon->priv->backend, "device-added",
@@ -1152,6 +1203,7 @@ up_daemon_finalize (GObject *object)
 
 	g_object_unref (priv->power_devices);
 	g_object_unref (priv->display_device);
+	g_object_unref (priv->polkit);
 	g_object_unref (priv->config);
 	g_object_unref (priv->backend);
 

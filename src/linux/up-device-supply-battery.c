@@ -128,6 +128,64 @@ get_sysfs_attr_uncached (GUdevDevice *native, const gchar *key)
 }
 
 static gboolean
+up_device_supply_battery_convert_to_double (const gchar *str_value, gdouble *value)
+{
+	gdouble conv_value;
+	gchar *end = NULL;
+
+	if (str_value == NULL || value == NULL)
+		return FALSE;
+
+	conv_value = g_ascii_strtod (str_value, &end);
+	if (end == str_value || conv_value < 0.0 || conv_value > 100.0)
+		return FALSE;
+
+	*value = conv_value;
+
+	return TRUE;
+}
+
+static gboolean
+up_device_supply_battery_get_charge_control_limits (GUdevDevice *native, UpBatteryInfo *info)
+{
+	const gchar *charge_limit;
+	g_auto(GStrv) pairs = NULL;
+	gdouble charge_control_start_threshold;
+	gdouble charge_control_end_threshold;
+
+	charge_limit = g_udev_device_get_property (native, "CHARGE_LIMIT");
+	if (charge_limit == NULL)
+		return FALSE;
+
+	pairs = g_strsplit (charge_limit, ",", 0);
+	if (g_strv_length (pairs) != 2) {
+		g_warning("Could not parse CHARGE_LIMIT, expected 'number,number', got '%s'", charge_limit);
+		return FALSE;
+	}
+
+	if (g_strcmp0 (pairs[0], "_") == 0) {
+		g_debug ("charge_control_start_threshold is disabled");
+		charge_control_start_threshold = G_MAXUINT;
+	} else if (!up_device_supply_battery_convert_to_double (pairs[0], &charge_control_start_threshold)) {
+		g_warning ("failed to convert charge_control_start_threshold: %s", pairs[0]);
+		return FALSE;
+	}
+
+	if (g_strcmp0 (pairs[1], "_") == 0) {
+		g_debug ("charge_control_end_threshold is disabled");
+		charge_control_end_threshold = G_MAXUINT;
+	} else if (!up_device_supply_battery_convert_to_double (pairs[1], &charge_control_end_threshold)) {
+		g_warning ("failed to convert charge_control_start_threshold: %s", pairs[0]);
+		return FALSE;
+	}
+
+	info->charge_control_start_threshold = charge_control_start_threshold;
+	info->charge_control_end_threshold = charge_control_end_threshold;
+
+	return TRUE;
+}
+
+static gboolean
 up_device_supply_battery_refresh (UpDevice *device,
 				  UpRefreshReason reason)
 {
@@ -171,6 +229,14 @@ up_device_supply_battery_refresh (UpDevice *device,
 		info.energy.design = g_udev_device_get_sysfs_attr_as_double_uncached (native, "charge_full_design") / 1000000.0;
 	}
 	info.technology = up_convert_device_technology (get_sysfs_attr_uncached (native, "technology"));
+
+	if (up_device_supply_battery_get_charge_control_limits (native, &info)) {
+		info.charge_control_supported = TRUE;
+		info.charge_control_enabled = FALSE;
+	} else {
+		info.charge_control_enabled = FALSE;
+		info.charge_control_supported = FALSE;
+	}
 
 	/* NOTE: We used to warn about full > design, but really that is prefectly fine to happen. */
 
@@ -312,16 +378,77 @@ up_device_supply_battery_get_property (GObject        *object,
 	}
 }
 
+static char *
+up_device_supply_device_path (GUdevDevice *device)
+{
+	const char *root;
+
+	root = g_getenv ("UMOCKDEV_DIR");
+	if (!root || *root == '\0') {
+		return g_strdup (g_udev_device_get_sysfs_path (device));
+	}
+
+	return g_build_filename (root,
+				 g_udev_device_get_sysfs_path (device),
+				 NULL);
+}
+
+static gboolean
+up_device_supply_battery_set_battery_charge_thresholds(UpDevice *device, guint start, guint end, GError **error) {
+	guint err_count = 0;
+	GUdevDevice *native;
+	g_autofree gchar *native_path = NULL;
+	g_autofree gchar *start_filename = NULL;
+	g_autofree gchar *end_filename = NULL;
+	g_autoptr (GString) start_str = g_string_new (NULL);
+	g_autoptr (GString) end_str = g_string_new (NULL);
+
+	native = G_UDEV_DEVICE (up_device_get_native (device));
+	native_path = up_device_supply_device_path (native);
+	start_filename = g_build_filename (native_path, "charge_control_start_threshold", NULL);
+	end_filename = g_build_filename (native_path, "charge_control_end_threshold", NULL);
+
+	if (start != G_MAXUINT) {
+		g_string_printf (start_str, "%d", CLAMP (start, 0, 100));
+		if (!g_file_set_contents_full (start_filename, start_str->str, start_str->len,
+					  G_FILE_SET_CONTENTS_ONLY_EXISTING, 0644, error)) {
+			err_count++;
+		}
+	} else {
+		g_debug ("Ignore charge_control_start_threshold setting");
+	}
+
+	if (end != G_MAXUINT) {
+		g_string_printf (end_str, "%d", CLAMP (end, 0, 100));
+		if (!g_file_set_contents_full (end_filename, end_str->str, end_str->len,
+					  G_FILE_SET_CONTENTS_ONLY_EXISTING, 0644, error)) {
+			err_count++;
+		}
+	} else {
+		g_debug ("Ignore charge_control_end_threshold setting");
+	}
+
+	if (err_count == 2) {
+		g_set_error_literal (error, G_IO_ERROR,
+				     G_IO_ERROR_FAILED, "Failed to set charge control thresholds");
+		return FALSE;
+	}
+
+	return TRUE;
+}
+
 static void
 up_device_supply_battery_class_init (UpDeviceSupplyBatteryClass *klass)
 {
 	GObjectClass *object_class = G_OBJECT_CLASS (klass);
 	UpDeviceClass *device_class = UP_DEVICE_CLASS (klass);
+	UpDeviceBatteryClass *battery_class = UP_DEVICE_BATTERY_CLASS (klass);
 
 	object_class->set_property = up_device_supply_battery_set_property;
 	object_class->get_property = up_device_supply_battery_get_property;
 	device_class->coldplug = up_device_supply_coldplug;
 	device_class->refresh = up_device_supply_battery_refresh;
+	battery_class->set_battery_charge_thresholds = up_device_supply_battery_set_battery_charge_thresholds;
 
 	g_object_class_install_property (object_class, PROP_IGNORE_SYSTEM_PERCENTAGE,
 					 g_param_spec_boolean ("ignore-system-percentage",

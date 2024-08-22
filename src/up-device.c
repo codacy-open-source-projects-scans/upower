@@ -392,6 +392,22 @@ up_device_get_daemon (UpDevice *device)
 	return g_object_ref (priv->daemon);
 }
 
+/**
+ * up_device_polkit_is_allowed
+ **/
+gboolean
+up_device_polkit_is_allowed (UpDevice *device, GDBusMethodInvocation *invocation)
+{
+	UpDevicePrivate *priv = up_device_get_instance_private (device);
+
+	if (!up_daemon_polkit_is_allowed (priv->daemon,
+					  "org.freedesktop.UPower.enable-charging-limit",
+					  invocation))
+		return FALSE;
+
+	return TRUE;
+}
+
 static void
 up_device_export_skeleton (UpDevice *device,
 			   const gchar *object_path)
@@ -733,6 +749,17 @@ up_device_get_native (UpDevice *device)
 	UpDevicePrivate *priv = up_device_get_instance_private (device);
 	g_return_val_if_fail (UP_IS_DEVICE (device), NULL);
 	return priv->native;
+}
+
+const gchar *
+up_device_get_state_dir_override (UpDevice *device)
+{
+	UpDevicePrivate *priv = up_device_get_instance_private (device);
+
+	if (priv->daemon == NULL)
+		return NULL;
+
+	return up_deamon_get_state_dir_env_override (priv->daemon);
 }
 
 static void
