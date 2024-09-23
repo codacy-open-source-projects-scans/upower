@@ -1159,7 +1159,7 @@ class Tests(dbusmock.DBusTestCase):
         def start_daemon(charge_threshold_value=None):
             upower_history_dir_override = tempfile.mkdtemp(prefix='upower-history-')
             if charge_threshold_value is not None:
-                with open(os.path.join(upower_history_dir_override, f"charging-threshold-status") , 'w') as fp:
+                with open(os.path.join(upower_history_dir_override, "charging-threshold-status") , 'w') as fp:
                     fp.write(charge_threshold_value)
 
             self.start_daemon(history_dir_override=upower_history_dir_override)
@@ -1235,7 +1235,7 @@ class Tests(dbusmock.DBusTestCase):
         def start_daemon(charge_threshold_value=None):
             upower_history_dir_override = tempfile.mkdtemp(prefix='upower-history-')
             if charge_threshold_value is not None:
-                with open(os.path.join(upower_history_dir_override, f"charging-threshold-status") , 'w') as fp:
+                with open(os.path.join(upower_history_dir_override, "charging-threshold-status") , 'w') as fp:
                     fp.write(charge_threshold_value)
 
             self.start_daemon(history_dir_override=upower_history_dir_override)
@@ -1288,7 +1288,7 @@ class Tests(dbusmock.DBusTestCase):
             self.assertEqual(fp.read(), '100')
 
     def test_battery_charge_threshold_unsupported(self):
-        '''Battery with only end_threshold supported'''
+        '''Battery with only start_threshold supported'''
 
         if not self.polkit:
             self.start_polkitd({})
