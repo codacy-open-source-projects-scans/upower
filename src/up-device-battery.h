@@ -64,6 +64,7 @@ typedef struct {
 	gdouble percentage;
 	gdouble voltage;
 	gdouble temperature;
+	gchar *capacity_level;
 } UpBatteryValues;
 
 typedef struct {
@@ -89,12 +90,15 @@ typedef struct {
 	UpDeviceTechnology technology;
 	gdouble voltage_design;
 	gint charge_cycles;
+	gdouble voltage_max_design;
+	gdouble voltage_min_design;
 
 	/* battery charging threshold */
 	gboolean charge_control_enabled;
 	gboolean charge_control_supported;
 	guint charge_control_start_threshold;
 	guint charge_control_end_threshold;
+	guint charge_threshold_settings;
 } UpBatteryInfo;
 
 

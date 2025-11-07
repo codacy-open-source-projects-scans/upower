@@ -220,6 +220,7 @@ up_device_notify (GObject *object, GParamSpec *pspec)
 {
 	UpDevice *device = UP_DEVICE (object);
 	UpDevicePrivate *priv = up_device_get_instance_private (device);
+	g_autofree gchar *id = NULL;
 
 	/* Not finished setting up the object? */
 	if (priv->daemon == NULL)
@@ -227,18 +228,20 @@ up_device_notify (GObject *object, GParamSpec *pspec)
 
 	G_OBJECT_CLASS (up_device_parent_class)->notify (object, pspec);
 
+	id = up_device_get_id (device);
+
 	if (g_strcmp0 (pspec->name, "type") == 0 ||
 	    g_strcmp0 (pspec->name, "is-present") == 0) {
 		update_icon_name (device);
 		/* Clearing the history object for lazily loading when device id was changed. */
 		if (priv->history != NULL &&
-		    !up_history_is_device_id_equal (priv->history, up_device_get_id(device)))
+		    !up_history_is_device_id_equal (priv->history, id))
 			g_clear_object (&priv->history);
 	} else if (g_strcmp0 (pspec->name, "vendor") == 0 ||
 		   g_strcmp0 (pspec->name, "model") == 0 ||
 		   g_strcmp0 (pspec->name, "serial") == 0) {
 		if (priv->history != NULL &&
-		    !up_history_is_device_id_equal (priv->history, up_device_get_id(device)))
+		    !up_history_is_device_id_equal (priv->history, id))
 			g_clear_object (&priv->history);
 	} else if (g_strcmp0 (pspec->name, "power-supply") == 0 ||
 		   g_strcmp0 (pspec->name, "time-to-empty") == 0) {
@@ -289,6 +292,13 @@ up_device_get_online (UpDevice *device, gboolean *online)
 	return klass->get_online (device, online);
 }
 
+/**
+ * up_device_get_id:
+ *
+ * Return the id of a Device.
+ * Note: The caller of the method takes ownership of the returned data, and is
+ * responsible for freeing it.
+ **/
 static gchar *
 up_device_get_id (UpDevice *device)
 {
@@ -660,7 +670,7 @@ up_device_get_history (UpExportedDevice *skeleton,
 	else if (g_strcmp0 (type_string, "time-empty") == 0)
 		type = UP_HISTORY_TYPE_TIME_EMPTY;
 
-	/* something recognised */
+	/* something recognized */
 	if (type != UP_HISTORY_TYPE_UNKNOWN) {
 		ensure_history (device);
 		array = up_history_get_data (priv->history, type, timespan, resolution);
@@ -905,7 +915,7 @@ up_device_class_init (UpDeviceClass *klass)
 	properties[PROP_DISCONNECTED] =
 		g_param_spec_boolean ("disconnected",
 		                      "Disconnected",
-		                      "Whethe wireless device is disconnected",
+		                      "Whether wireless device is disconnected",
 		                      FALSE,
 		                      G_PARAM_STATIC_STRINGS | G_PARAM_WRITABLE | G_PARAM_READABLE);
 

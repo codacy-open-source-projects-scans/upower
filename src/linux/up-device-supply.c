@@ -331,8 +331,10 @@ static void
 up_device_supply_sibling_discovered_guess_type (UpDevice *device,
 						GObject  *sibling)
 {
-	GUdevDevice *input;
+	GUdevDevice *input, *native_device, *parent_device, *parent_sibling;
 	UpDeviceKind cur_type, new_type;
+	gboolean is_same_parent = FALSE;
+	char *new_model_name;
 	char *model_name;
 	char *serial_number;
 	int i;
@@ -354,16 +356,16 @@ up_device_supply_sibling_discovered_guess_type (UpDevice *device,
 	 * a keyboard, a touchpad, and... etc, for example Sony DualShock4 joystick.
 	 * A mouse and a touchpad may include a mouse and a keyboard.
 	 * Therefore, the priority is:
-	 * 1. Audio
-	 * 2. Gaming_input
+	 * 1. Gaming_input
+	 * 2. Audio
 	 * 3. Keyboard
 	 * 4. Tablet
 	 * 5. Touchpad
 	 * 6. Mouse
 	*/
 	UpDeviceKind priority[] = {
-		UP_DEVICE_KIND_OTHER_AUDIO,
 		UP_DEVICE_KIND_GAMING_INPUT,
+		UP_DEVICE_KIND_OTHER_AUDIO,
 		UP_DEVICE_KIND_KEYBOARD,
 		UP_DEVICE_KIND_TABLET,
 		UP_DEVICE_KIND_TOUCHPAD,
@@ -465,10 +467,34 @@ up_device_supply_sibling_discovered_guess_type (UpDevice *device,
 	}
 
 	if (cur_type != new_type) {
+		native_device = G_UDEV_DEVICE (up_device_get_native (device));
+		parent_device = g_udev_device_get_parent (native_device);
+		parent_sibling = g_udev_device_get_parent (input);
+
 		g_debug ("Type changed from %s to %s",
-			 up_device_kind_to_string(cur_type),
-			 up_device_kind_to_string(new_type));
-		g_object_set (device, "type", new_type, NULL);
+			 up_device_kind_to_string (cur_type),
+			 up_device_kind_to_string (new_type));
+
+		/* Check if the device and the sibling have the same parent. */
+		if (!g_strcmp0 (g_udev_device_get_sysfs_path (parent_device),
+				g_udev_device_get_sysfs_path (parent_sibling)))
+			is_same_parent = TRUE;
+
+		new_model_name = up_device_supply_get_string (input, "name");
+		/* The model name of a device component may be different. For example, DualSense
+		 * joystick owns "Sony Interactive Entertainment DualSense Wireless Controller"
+		 * for the joystick and "Sony Interactive Entertainment DualSense Wireless Controller
+		 * Motion Sensors" for the accelerometer. If the type is change, the corresponding
+		 * model name have to be changed too. */
+		if (new_model_name != NULL && is_same_parent) {
+			up_make_safe_string (new_model_name);
+			g_object_set (device,
+				      "type", new_type,
+				      "model", new_model_name,
+				      NULL);
+			g_free (new_model_name);
+		} else
+			g_object_set (device, "type", new_type, NULL);
 	}
 }
 
@@ -554,7 +580,7 @@ up_device_supply_guess_type (GUdevDevice *native,
 			g_warning ("USB power supply %s without usb_type property, please report",
 				   native_path);
 	} else {
-		g_warning ("did not recognise type %s, please report", device_type);
+		g_warning ("did not recognize type %s, please report", device_type);
 	}
 
 out:

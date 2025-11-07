@@ -199,7 +199,7 @@ up_device_battery_update_poll_frequency (UpDeviceBattery *self,
 	 * and one of the following holds true:
 	 *  1. The current stat is unknown; we hope that this is transient
 	 *     and re-poll.
-	 *  2. A change occured on a line power supply. This likely means that
+	 *  2. A change occurred on a line power supply. This likely means that
 	 *     batteries switch between charging/discharging which does not
 	 *     always result in a separate uevent.
 	 *
@@ -259,7 +259,7 @@ up_device_battery_report (UpDeviceBattery *self,
 	/* QUIRK:
 	 *
 	 * There is an old bug where some Lenovo machine switched from reporting
-	 * energy to reporting charge numbers. The code used to react by 
+	 * energy to reporting charge numbers. The code used to react by
 	 * reloading everything, however, what apparently happens is that the
 	 * *energy* value simply starts being reported through *charge*
 	 * attributes.
@@ -270,7 +270,7 @@ up_device_battery_report (UpDeviceBattery *self,
 	 * incorrectly multiplied by the voltage.
 	 *
 	 * Said differently, just assuming the units did *not* change should
-	 * give us a saner value. Obviously, things will fall appart if upower
+	 * give us a saner value. Obviously, things will fall apart if upower
 	 * is restarted and this should be fixed in the kernel or firmware.
 	 *
 	 * Unfortunately, the hardware is quite old (X201s) which makes it hard
@@ -391,6 +391,7 @@ up_device_battery_report (UpDeviceBattery *self,
 		      "energy-rate", values->energy.rate,
 		      "time-to-empty", time_to_empty,
 		      "time-to-full", time_to_full,
+		      "capacity-level", values->capacity_level,
 		      /* XXX: Move "update-time" updates elsewhere? */
 		      "update-time", (guint64) g_get_real_time () / G_USEC_PER_SEC,
 		      NULL);
@@ -536,6 +537,9 @@ up_device_battery_update_info (UpDeviceBattery *self, UpBatteryInfo *info)
 				      "charge-end-threshold", info->charge_control_end_threshold,
 				      "charge-threshold-enabled", charge_threshold_enabled,
 				      "charge-threshold-supported", info->charge_control_supported,
+				      "charge-threshold-settings-supported", info->charge_threshold_settings,
+				      "voltage-min-design", info->voltage_min_design,
+				      "voltage-max-design", info->voltage_max_design,
 			              NULL);
 
 			priv->present = TRUE;
@@ -595,18 +599,27 @@ up_device_battery_update_info (UpDeviceBattery *self, UpBatteryInfo *info)
 		              "vendor", NULL,
 		              "model", NULL,
 		              "serial", NULL,
+			      "state", UP_DEVICE_STATE_UNKNOWN,
 		              "technology", UP_DEVICE_TECHNOLOGY_UNKNOWN,
 		              "capacity", (gdouble) 0.0,
+			      "energy", (gdouble) 0.0,
 		              "energy-full", (gdouble) 0.0,
 		              "energy-full-design", (gdouble) 0.0,
+			      "voltage", (gdouble) 0.0,
 		              "charge-cycles", -1,
 		              "has-history", FALSE,
 		              "has-statistics", FALSE,
+			      "percentage", (gdouble) 0.0,
+			      "temperature", (gdouble) 0.0,
 		              "update-time", (guint64) g_get_real_time () / G_USEC_PER_SEC,
 			      "charge-start-threshold", 0,
-			      "charge-end-threshold", 100,
+			      "charge-end-threshold", 0,
 			      "charge-threshold-enabled", FALSE,
 			      "charge-threshold-supported", FALSE,
+			      "charge-threshold-settings-supported", 0,
+			      "voltage-min-design", (gdouble) 0.0,
+			      "voltage-max-design", (gdouble) 0.0,
+			      "capacity-level", NULL,
 		              NULL);
 	}
 }

@@ -210,6 +210,7 @@ main (gint argc, gchar **argv)
 	if (!g_option_context_parse (context, &argc, &argv, &error)) {
 		g_warning ("Failed to parse command-line options: %s", error->message);
 		g_error_free (error);
+		g_option_context_free (context);
 		return 1;
 	}
 	g_option_context_free (context);
@@ -284,7 +285,7 @@ main (gint argc, gchar **argv)
 		g_source_set_name_by_id (timer_id, "[upower] up_main_timed_exit_cb");
 	}
 
-	/* immediatly exit */
+	/* immediately exit */
 	if (immediate_exit) {
 		g_timeout_add (50, (GSourceFunc) up_main_timed_exit_cb, state);
 		g_source_set_name_by_id (timer_id, "[upower] up_main_timed_exit_cb");

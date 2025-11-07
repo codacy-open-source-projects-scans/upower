@@ -1,10 +1,10 @@
 option('man',
        type : 'boolean',
-       value : 'true',
+       value : true,
        description : 'Build manpages')
 option('gtk-doc',
        type : 'boolean',
-       value : 'true',
+       value : true,
        description : 'Build developer documentation')
 option('introspection',
        type : 'feature',
@@ -40,3 +40,11 @@ option('polkit',
        type: 'feature',
        value: 'auto',
        description: 'PolKit support in daemon')
+option('zshcompletiondir',
+       type: 'string',
+       value: '',
+       description: 'Directory for zsh completion scripts ["no" disables]')
+option('installed_tests',
+       type : 'boolean',
+       value : true,
+       description : 'Install integration tests')

@@ -1,5 +1,5 @@
 project('upower', 'c',
-    version: '1.90.6',
+    version: '1.90.10',
     license: 'GPLv2+',
     default_options: [
         'buildtype=debugoptimized',
@@ -138,6 +138,7 @@ subdir('libupower-glib')
 subdir('src')
 subdir('tools')
 subdir('doc')
+subdir('data/zsh-completion')
 subdir('policy')
 
 pkgconfig = import('pkgconfig')

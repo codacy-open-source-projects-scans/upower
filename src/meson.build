@@ -40,6 +40,8 @@ upowerd_private = static_library('upowerd-private',
         'up-enumerator.h',
         'up-kbd-backlight.h',
         'up-kbd-backlight.c',
+        'up-device-kbd-backlight.c',
+        'up-device-kbd-backlight.h',
         'up-history.h',
         'up-history.c',
         'up-backend.h',
@@ -142,24 +144,27 @@ if os_backend == 'linux' and gobject_introspection.found()
              args: ut_args,
              env: env,
              depends: [ libupower_glib_typelib, upowerd ],
-             timeout: 80,
+             timeout: 150,
             )
     endforeach
 
-    install_data( [
-        'linux/integration-test.py',
-        'linux/output_checker.py',
-      ],
-      install_dir: get_option('prefix') / get_option('libexecdir') / 'upower'
-    )
-    install_subdir('linux/tests/',
-      install_dir: get_option('prefix') / get_option('libexecdir') / 'upower'
-    )
+    installed_tests = get_option('installed_tests')
+    if installed_tests
+        install_data( [
+            'linux/integration-test.py',
+            'linux/output_checker.py',
+          ],
+          install_dir: get_option('prefix') / get_option('libexecdir') / 'upower'
+        )
+        install_subdir('linux/tests/',
+          install_dir: get_option('prefix') / get_option('libexecdir') / 'upower'
+        )
 
-    configure_file(
-      input: 'upower-integration.test.in',
-      output: 'upower-integration.test',
-      install_dir: get_option('datadir') / 'installed-tests' / 'upower',
-      configuration: cdata
-    )
+        configure_file(
+          input: 'upower-integration.test.in',
+          output: 'upower-integration.test',
+          install_dir: get_option('datadir') / 'installed-tests' / 'upower',
+          configuration: cdata
+        )
+    endif
 endif

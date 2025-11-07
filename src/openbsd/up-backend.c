@@ -383,6 +383,8 @@ up_backend_update_battery_state(UpDevice* device)
 			(void*) NULL);
 		if(up_native_get_sensordev("acpibat0", &sdev))
 			up_backend_update_acpibat_state(device, sdev);
+		else if(up_native_get_sensordev("qcpas0", &sdev))
+			up_backend_update_acpibat_state(device, sdev);
 		return TRUE;
 	}
 	return FALSE;
@@ -602,7 +604,7 @@ up_backend_apm_event_thread(gpointer object)
 	}
 #endif
 	return NULL;
-	/* shouldnt be reached ? */
+	/* shouldn't be reached ? */
 }
 
 /**
@@ -685,4 +687,3 @@ up_backend_finalize (GObject *object)
 
 	G_OBJECT_CLASS (up_backend_parent_class)->finalize (object);
 }
-

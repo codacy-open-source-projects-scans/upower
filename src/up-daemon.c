@@ -33,6 +33,7 @@
 #include "up-polkit.h"
 #include "up-device-list.h"
 #include "up-device.h"
+#include "up-device-kbd-backlight.h"
 #include "up-backend.h"
 #include "up-daemon.h"
 
@@ -43,6 +44,7 @@ struct UpDaemonPrivate
 	UpPolkit		*polkit;
 	UpBackend		*backend;
 	UpDeviceList		*power_devices;
+	UpDeviceList		*kbd_backlight_devices;
 	guint			 action_timeout_id;
 	guint			 refresh_batteries_id;
 	guint			 warning_level_id;
@@ -60,6 +62,9 @@ struct UpDaemonPrivate
 	gdouble			 energy_rate;
 	gint64			 time_to_empty;
 	gint64			 time_to_full;
+
+	gboolean		 charge_threshold_enabled;
+	gboolean		 state_all_discharging;
 
 	/* WarningLevel configuration */
 	gboolean		 use_percentage_for_policy;
@@ -147,7 +152,11 @@ up_daemon_update_display_battery (UpDaemon *daemon)
 	gint64 time_to_empty_total = 0;
 	gint64 time_to_full_total = 0;
 	gboolean is_present_total = FALSE;
+	gboolean charge_threshold_enabled_total = FALSE;
 	guint num_batteries = 0;
+
+	gboolean state_all_discharging = TRUE;
+	gboolean state_any_discharging = FALSE;
 
 	/* Gather state from each device */
 	array = up_device_list_get_array (daemon->priv->power_devices);
@@ -156,6 +165,7 @@ up_daemon_update_display_battery (UpDaemon *daemon)
 
 		UpDeviceState state = UP_DEVICE_STATE_UNKNOWN;
 		UpDeviceKind kind = UP_DEVICE_KIND_UNKNOWN;
+		gboolean present = FALSE;
 		gdouble percentage = 0.0;
 		gdouble energy = 0.0;
 		gdouble energy_full = 0.0;
@@ -163,9 +173,11 @@ up_daemon_update_display_battery (UpDaemon *daemon)
 		gint64 time_to_empty = 0;
 		gint64 time_to_full = 0;
 		gboolean power_supply = FALSE;
+		gboolean charge_threshold_enabled = FALSE;
 
 		device = g_ptr_array_index (array, i);
 		g_object_get (device,
+			      "is-present", &present,
 			      "type", &kind,
 			      "state", &state,
 			      "percentage", &percentage,
@@ -175,7 +187,11 @@ up_daemon_update_display_battery (UpDaemon *daemon)
 			      "time-to-empty", &time_to_empty,
 			      "time-to-full", &time_to_full,
 			      "power-supply", &power_supply,
+			      "charge-threshold-enabled", &charge_threshold_enabled,
 			      NULL);
+
+		if (!present)
+			continue;
 
 		/* When we have a UPS, it's either a desktop, and
 		 * has no batteries, or a laptop, in which case we
@@ -225,6 +241,17 @@ up_daemon_update_display_battery (UpDaemon *daemon)
 			state_total = UP_DEVICE_STATE_EMPTY;
 		else
 			state_total = UP_DEVICE_STATE_UNKNOWN;
+
+		/* Update charging state variables by considering any battery that is charging or fully charged to not
+		 * be discharging. Additionally, also update state_any_discharge for any batteries explicitly
+		 * discharging. */
+		if (state == UP_DEVICE_STATE_CHARGING || state == UP_DEVICE_STATE_FULLY_CHARGED) {
+			state_all_discharging = FALSE;
+		} else if (state == UP_DEVICE_STATE_DISCHARGING)
+			state_any_discharging = TRUE;
+
+		/* If at least one battery has charge thresholds enabled, propagate that. */
+		charge_threshold_enabled_total = charge_threshold_enabled_total || charge_threshold_enabled;
 
 		/* sum up composite */
 		kind_total = UP_DEVICE_KIND_BATTERY;
@@ -288,6 +315,9 @@ out:
 			time_to_full_total = SECONDS_PER_HOUR * ((energy_full_total - energy_total) / energy_rate_total);
 	}
 
+	/* Compute state_all_discharging by ensuring at least one battery is discharging */
+	state_all_discharging = state_all_discharging && state_any_discharging;
+
 	/* Did anything change? */
 	if (daemon->priv->kind == kind_total &&
 	    daemon->priv->state == state_total &&
@@ -296,7 +326,9 @@ out:
 	    daemon->priv->energy_rate == energy_rate_total &&
 	    daemon->priv->time_to_empty == time_to_empty_total &&
 	    daemon->priv->time_to_full == time_to_full_total &&
-	    daemon->priv->percentage == percentage_total)
+	    daemon->priv->percentage == percentage_total &&
+	    daemon->priv->charge_threshold_enabled == charge_threshold_enabled_total &&
+	    daemon->priv->state_all_discharging == state_all_discharging)
 		return FALSE;
 
 	daemon->priv->kind = kind_total;
@@ -309,6 +341,9 @@ out:
 
 	daemon->priv->percentage = percentage_total;
 
+	daemon->priv->charge_threshold_enabled = charge_threshold_enabled_total;
+	daemon->priv->state_all_discharging = state_all_discharging;
+
 	g_object_set (daemon->priv->display_device,
 		      "type", kind_total,
 		      "state", state_total,
@@ -319,6 +354,7 @@ out:
 		      "time-to-full", time_to_full_total,
 		      "percentage", percentage_total,
 		      "is-present", is_present_total,
+		      "charge-threshold-enabled", charge_threshold_enabled_total,
 		      "power-supply", TRUE,
 		      "update-time", (guint64) g_get_real_time () / G_USEC_PER_SEC,
 		      NULL);
@@ -329,7 +365,7 @@ out:
 /**
  * up_daemon_get_warning_level_local:
  *
- * As soon as _all_ batteries are low, this is true
+ * As soon as _all_ batteries are low, external power is not available or not charging at least one battery, this is true
  **/
 static UpDeviceLevel
 up_daemon_get_warning_level_local (UpDaemon *daemon)
@@ -342,9 +378,10 @@ up_daemon_get_warning_level_local (UpDaemon *daemon)
 	    daemon->priv->state != UP_DEVICE_STATE_DISCHARGING)
 		return UP_DEVICE_LEVEL_NONE;
 
-	/* Check to see if the batteries have not noticed we are on AC */
+	/* Ignore battery level if we have external power and not all batteries are discharging */
 	if (daemon->priv->kind == UP_DEVICE_KIND_BATTERY &&
-	    up_daemon_get_on_ac_local (daemon, NULL))
+	    up_daemon_get_on_ac_local (daemon, NULL) &&
+	    !daemon->priv->state_all_discharging)
 		return UP_DEVICE_LEVEL_NONE;
 
 	return up_daemon_compute_warning_level (daemon,
@@ -462,6 +499,38 @@ up_daemon_enumerate_devices (UpExportedDaemon *skeleton,
 	return TRUE;
 }
 
+static gboolean
+up_daemon_enumerate_kbd_backlights (UpExportedDaemon *skeleton,
+				    GDBusMethodInvocation *invocation,
+				    UpDaemon *daemon)
+{
+	guint i;
+	GPtrArray *array;
+	GPtrArray *object_paths;
+	UpDeviceKbdBacklight *kbd_backlight;
+
+	/* build a pointer array of the object paths */
+	object_paths = g_ptr_array_new_with_free_func (g_free);
+	array = up_device_list_get_array (daemon->priv->kbd_backlight_devices);
+	for (i = 0; i < array->len; i++) {
+		const char *object_path;
+		kbd_backlight = (UpDeviceKbdBacklight *) g_ptr_array_index (array, i);
+		object_path = up_device_kbd_backlight_get_object_path (kbd_backlight);
+		if (object_path != NULL)
+			g_ptr_array_add (object_paths, g_strdup (object_path));
+	}
+	g_ptr_array_unref (array);
+	g_ptr_array_add (object_paths, NULL);
+
+	/* return it on the bus */
+	up_exported_daemon_complete_enumerate_kbd_backlights (skeleton, invocation,
+							      (const gchar **) object_paths->pdata);
+
+	/* free */
+	g_ptr_array_unref (object_paths);
+	return TRUE;
+}
+
 /**
  * up_daemon_get_display_device:
  **/
@@ -566,6 +635,7 @@ up_daemon_shutdown (UpDaemon *daemon)
 
 	/* forget about discovered devices */
 	up_device_list_clear (daemon->priv->power_devices);
+	up_device_list_clear (daemon->priv->kbd_backlight_devices);
 
 	/* release UpDaemon reference */
 	g_object_run_dispose (G_OBJECT (daemon->priv->display_device));
@@ -999,35 +1069,50 @@ up_daemon_get_env_override (UpDaemon *self)
  * up_daemon_device_added_cb:
  **/
 static void
-up_daemon_device_added_cb (UpBackend *backend, UpDevice *device, UpDaemon *daemon)
+up_daemon_device_added_cb (UpBackend *backend, GObject *device, UpDaemon *daemon)
 {
 	const gchar *object_path;
 	UpDaemonPrivate *priv = daemon->priv;
 
 	g_return_if_fail (UP_IS_DAEMON (daemon));
-	g_return_if_fail (UP_IS_DEVICE (device));
+	g_return_if_fail (UP_IS_DEVICE (device) || UP_IS_DEVICE_KBD_BACKLIGHT (device));
 
-	/* add to device list */
-	up_device_list_insert (priv->power_devices, device);
+	if (UP_IS_DEVICE (device)) {
+		/* power_supply */
+		/* add to device list */
+		up_device_list_insert (priv->power_devices, device);
 
-	/* connect, so we get changes */
-	g_signal_connect (device, "notify",
-			  G_CALLBACK (up_daemon_device_changed_cb), daemon);
+		/* connect, so we get changes */
+		g_signal_connect (device, "notify",
+				  G_CALLBACK (up_daemon_device_changed_cb), daemon);
 
-	/* emit */
-	object_path = up_device_get_object_path (device);
-	if (object_path == NULL) {
-		g_debug ("Device %s was unregistered before it was on the bus",
-			 up_exported_device_get_native_path (UP_EXPORTED_DEVICE (device)));
-		return;
+		/* emit */
+		object_path = up_device_get_object_path (UP_DEVICE (device));
+		if (object_path == NULL) {
+			g_debug ("Device %s was unregistered before it was on the bus",
+				 up_exported_device_get_native_path (UP_EXPORTED_DEVICE (device)));
+			return;
+		}
+
+		/* Ensure we poll the new device if needed */
+		g_source_set_ready_time (daemon->priv->poll_source, 0);
+
+		g_debug ("emitting added: %s", object_path);
+		up_daemon_update_warning_level (daemon);
+		up_exported_daemon_emit_device_added (UP_EXPORTED_DAEMON (daemon), object_path);
+	} else {
+		/*leds*/
+		g_debug ("Add a led device to the device list");
+		/* emit */
+		object_path = up_device_kbd_backlight_get_object_path (UP_DEVICE_KBD_BACKLIGHT (device));
+		if (object_path == NULL) {
+			g_debug ("Device %s was unregistered before it was on the bus",
+				 up_exported_kbd_backlight_get_native_path (UP_EXPORTED_KBD_BACKLIGHT (device)));
+			return;
+		}
+		up_device_list_insert (priv->kbd_backlight_devices, G_OBJECT (device));
+		up_exported_daemon_emit_device_added (UP_EXPORTED_DAEMON (daemon), object_path);
 	}
-
-	/* Ensure we poll the new device if needed */
-	g_source_set_ready_time (daemon->priv->poll_source, 0);
-
-	g_debug ("emitting added: %s", object_path);
-	up_daemon_update_warning_level (daemon);
-	up_exported_daemon_emit_device_added (UP_EXPORTED_DAEMON (daemon), object_path);
 }
 
 /**
@@ -1040,15 +1125,22 @@ up_daemon_device_removed_cb (UpBackend *backend, UpDevice *device, UpDaemon *dae
 	UpDaemonPrivate *priv = daemon->priv;
 
 	g_return_if_fail (UP_IS_DAEMON (daemon));
-	g_return_if_fail (UP_IS_DEVICE (device));
+	g_return_if_fail (UP_IS_DEVICE (device) || UP_IS_DEVICE_KBD_BACKLIGHT (device));
 
 	g_signal_handlers_disconnect_by_data (device, daemon);
 
-	/* remove from list (device remains valid during the function call) */
-	up_device_list_remove (priv->power_devices, device);
-
 	/* emit */
-	object_path = up_device_get_object_path (device);
+	if (UP_IS_DEVICE (device)) {
+		/* remove from list (device remains valid during the function call) */
+		up_device_list_remove (priv->power_devices, device);
+		object_path = up_device_get_object_path (device);
+	} else if (UP_IS_DEVICE_KBD_BACKLIGHT (device)) {
+		/* remove from list (device remains valid during the function call) */
+		up_device_list_remove (priv->kbd_backlight_devices, device);
+		object_path = up_device_kbd_backlight_get_object_path (UP_DEVICE_KBD_BACKLIGHT (device));
+	} else {
+		return;
+	}
 
 	/* don't crash the session */
 	if (object_path == NULL) {
@@ -1058,6 +1150,10 @@ up_daemon_device_removed_cb (UpBackend *backend, UpDevice *device, UpDaemon *dae
 	}
 	g_debug ("emitting device-removed: %s", object_path);
 	up_exported_daemon_emit_device_removed (UP_EXPORTED_DAEMON (daemon), object_path);
+
+	/* Unregister keyboard backlight dbus path */
+	if (UP_IS_DEVICE_KBD_BACKLIGHT (device))
+		up_device_kbd_backlight_unregister (UP_DEVICE_KBD_BACKLIGHT (device));
 
 	/* In case a battery was removed */
 	up_daemon_refresh_battery_devices (daemon);
@@ -1119,6 +1215,7 @@ up_daemon_init (UpDaemon *daemon)
 	daemon->priv->polkit = up_polkit_new ();
 	daemon->priv->config = up_config_new ();
 	daemon->priv->power_devices = up_device_list_new ();
+	daemon->priv->kbd_backlight_devices = up_device_list_new ();
 	daemon->priv->display_device = up_device_new (daemon, NULL);
 	daemon->priv->poll_source = g_source_new (&poll_source_funcs, sizeof (GSource));
 
@@ -1145,6 +1242,8 @@ up_daemon_init (UpDaemon *daemon)
 
 	g_signal_connect (daemon, "handle-enumerate-devices",
 			  G_CALLBACK (up_daemon_enumerate_devices), daemon);
+	g_signal_connect (daemon, "handle-enumerate-kbd_backlights",
+				G_CALLBACK (up_daemon_enumerate_kbd_backlights), daemon);
 	g_signal_connect (daemon, "handle-get-critical-action",
 			  G_CALLBACK (up_daemon_get_critical_action), daemon);
 	g_signal_connect (daemon, "handle-get-display-device",
@@ -1203,6 +1302,7 @@ up_daemon_finalize (GObject *object)
 	g_clear_pointer (&daemon->priv->poll_source, g_source_destroy);
 
 	g_object_unref (priv->power_devices);
+	g_object_unref (priv->kbd_backlight_devices);
 	g_object_unref (priv->display_device);
 	g_object_unref (priv->polkit);
 	g_object_unref (priv->config);
