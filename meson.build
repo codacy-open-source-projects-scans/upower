@@ -1,5 +1,5 @@
 project('upower', 'c',
-    version: '1.90.10',
+    version: '1.91.0',
     license: 'GPLv2+',
     default_options: [
         'buildtype=debugoptimized',
@@ -10,7 +10,7 @@ project('upower', 'c',
 
 soversion = 3
 current = 1
-revision = 0
+revision = 1
 libversion = '@0@.@1@.@2@'.format(soversion, current, revision)
 
 gnome = import('gnome')
