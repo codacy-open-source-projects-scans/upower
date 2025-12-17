@@ -350,9 +350,8 @@ up_device_to_text (UpDevice *device)
 		if (up_exported_device_get_voltage_max_design (priv->proxy_device) > 0)
 			g_string_append_printf (string, "    voltage-max-design:  %g V\n", up_exported_device_get_voltage_max_design (priv->proxy_device));
 
-		/* Suppress the warning about the deprecated property CapacityLevel */
-		/* DEPRECATED. This property is deprecated since it is duplicated from the 'BatteryLevel' property.
-		 * since 1.91.0 */
+		/* Eliminate the display of the deprecation warning specific to the CapacityLevel property. */
+		/* DEPRECATED. This property is deprecated since it is duplicated from the 'BatteryLevel' property. */
 		#pragma GCC diagnostic push
 		#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
 		capacity_level = up_exported_device_get_capacity_level (priv->proxy_device);
@@ -377,8 +376,12 @@ up_device_to_text (UpDevice *device)
 			g_string_append_printf (string, "    charge-cycles:       %s\n", "N/A");
 	}
 	if (kind == UP_DEVICE_KIND_KEYBOARD) {
+		/* DEPRECATED. This property is deprecated since the code it depends on was removed in 0.99.12. */
+		#pragma GCC diagnostic push
+		#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
 		if (up_exported_device_get_luminosity (priv->proxy_device) > 0)
 			g_string_append_printf (string, "    luminosity:          %g lx\n", up_exported_device_get_luminosity (priv->proxy_device));
+		#pragma GCC diagnostic pop
 	}
 	if (kind == UP_DEVICE_KIND_BATTERY ||
 	    kind == UP_DEVICE_KIND_UPS) {
@@ -694,7 +697,11 @@ up_device_set_property (GObject *object, guint prop_id, const GValue *value, GPa
 		up_exported_device_set_voltage (device->priv->proxy_device, g_value_get_double (value));
 		break;
 	case PROP_LUMINOSITY:
+		/* DEPRECATED. This property is deprecated since the code it depends on was removed in 0.99.12. */
+		#pragma GCC diagnostic push
+		#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
 		up_exported_device_set_luminosity (device->priv->proxy_device, g_value_get_double (value));
+		#pragma GCC diagnostic pop
 		break;
 	case PROP_TIME_TO_EMPTY:
 		up_exported_device_set_time_to_empty (device->priv->proxy_device, g_value_get_int64 (value));
@@ -741,9 +748,8 @@ up_device_set_property (GObject *object, guint prop_id, const GValue *value, GPa
 	case PROP_VOLTAGE_MAX_DESIGN:
 		up_exported_device_set_voltage_max_design (device->priv->proxy_device, g_value_get_double (value));
 		break;
-	/* Suppress the warning about the deprecated property CapacityLevel */
-	/* DEPRECATED. This property is deprecated since it is duplicated from the 'BatteryLevel' property.
-	 * since 1.91.0 */
+	/* Eliminate the display of the deprecation warning specific to the CapacityLevel property. */
+	/* DEPRECATED. This property is deprecated since it is duplicated from the 'BatteryLevel' property. */
 	#pragma GCC diagnostic push
 	#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
 	case PROP_CAPACITY_LEVEL:
@@ -841,7 +847,11 @@ up_device_get_property (GObject *object, guint prop_id, GValue *value, GParamSpe
 		g_value_set_double (value, up_exported_device_get_voltage (device->priv->proxy_device));
 		break;
 	case PROP_LUMINOSITY:
+		/* DEPRECATED. This property is deprecated since the code it depends on was removed in 0.99.12. */
+		#pragma GCC diagnostic push
+		#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
 		g_value_set_double (value, up_exported_device_get_luminosity (device->priv->proxy_device));
+		#pragma GCC diagnostic pop
 		break;
 	case PROP_TIME_TO_EMPTY:
 		g_value_set_int64 (value, up_exported_device_get_time_to_empty (device->priv->proxy_device));
@@ -885,9 +895,8 @@ up_device_get_property (GObject *object, guint prop_id, GValue *value, GParamSpe
 	case PROP_VOLTAGE_MAX_DESIGN:
 		g_value_set_double (value, up_exported_device_get_voltage_max_design (device->priv->proxy_device));
 		break;
-	/* Suppress the warning about the deprecated property CapacityLevel */
-	/* DEPRECATED. This property is deprecated since it is duplicated from the 'BatteryLevel' property.
-	 * since 1.91.0 */
+	/* Eliminate the display of the deprecation warning specific to the CapacityLevel property. */
+	/* DEPRECATED. This property is deprecated since it is duplicated from the 'BatteryLevel' property. */
 	#pragma GCC diagnostic push
 	#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
 	case PROP_CAPACITY_LEVEL:
@@ -1193,13 +1202,16 @@ up_device_class_init (UpDeviceClass *klass)
 	 *
 	 * The current luminosity of the device.
 	 *
+	 * NOTE: As of 1.91.1, this property is deprecated since the code it
+	 * depends on was removed in 0.99.12.
+	 *
 	 * Since: 0.9.19
 	 **/
 	g_object_class_install_property (object_class,
 					 PROP_LUMINOSITY,
 					 g_param_spec_double ("luminosity", NULL, NULL,
 							      0.0, G_MAXDOUBLE, 0.0,
-							      G_PARAM_READWRITE));
+							      G_PARAM_READWRITE | G_PARAM_DEPRECATED));
 	/**
 	 * UpDevice:time-to-empty:
 	 *
@@ -1404,14 +1416,12 @@ up_device_class_init (UpDeviceClass *klass)
 	 *
 	 * DEPRECATED.
 	 * This property is deprecated since it is duplicated from the 'BatteryLevel' property.
-	 *
-	 * Since 1.91.0
 	 **/
 	g_object_class_install_property (object_class,
 					 PROP_CAPACITY_LEVEL,
 					 g_param_spec_string ("capacity-level",
 							      NULL, NULL, NULL,
-							      G_PARAM_READWRITE));
+							      G_PARAM_READWRITE | G_PARAM_DEPRECATED));
 }
 
 static void
