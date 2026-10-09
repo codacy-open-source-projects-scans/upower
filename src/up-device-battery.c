@@ -228,6 +228,14 @@ up_device_battery_update_poll_frequency (UpDeviceBattery *self,
 	}
 }
 
+static gdouble
+up_device_battery_calc_capacity (gdouble energy_full, gdouble energy_design)
+{
+	if (energy_design > 0.0)
+		return MIN (energy_full / energy_design * 100.0, 100.0);
+	return 0.0;
+}
+
 void
 up_device_battery_report (UpDeviceBattery *self,
 			  UpBatteryValues *values,
@@ -304,16 +312,22 @@ up_device_battery_report (UpDeviceBattery *self,
 
 	/* QUIRK: Increase energy_full if energy.cur is higher */
 	if (values->energy.cur > priv->energy_full) {
-		priv->energy_full = values->energy.cur;
-		g_object_set (self,
-		              /* How healthy the battery is (clamp to 100% if it can hold more charge than expected) */
-		              "capacity", MIN (priv->energy_full / priv->energy_design * 100.0, 100),
-		              "energy-full", priv->energy_full,
-		              NULL);
+		/* Ignore impossible capacity spikes (e.g. due to EC handshake glitches/unscaled values) */
+		if (priv->energy_design > 0 && values->energy.cur > priv->energy_design) {
+			g_debug ("Ignored impossible battery capacity spike: %f Wh (design: %f Wh)",
+			         values->energy.cur, priv->energy_design);
+		} else {
+			priv->energy_full = values->energy.cur;
+			g_object_set (self,
+				      /* How healthy the battery is (clamp to 100% if it can hold more charge than expected) */
+				      "capacity", up_device_battery_calc_capacity (priv->energy_full, priv->energy_design),
+				      "energy-full", priv->energy_full,
+				      NULL);
+		}
 	}
 
 	/* Infer percentage if unknown */
-	if (values->percentage <= 0)
+	if (values->percentage <= 0 && priv->energy_full > 0.0)
 		values->percentage = values->energy.cur / priv->energy_full * 100;
 
 	/* NOTE: We used to do more for the UNKNOWN state. However, some of the
@@ -574,7 +588,7 @@ up_device_battery_update_info (UpDeviceBattery *self, UpBatteryInfo *info)
 
 			g_object_set (self,
 			              /* How healthy the battery is (clamp to 100% if it can hold more charge than expected) */
-			              "capacity", MIN (priv->energy_full / priv->energy_design * 100.0, 100),
+			              "capacity", up_device_battery_calc_capacity (priv->energy_full, priv->energy_design),
 			              "energy-full", priv->energy_full,
 			              "energy-full-design", priv->energy_design,
 			              NULL);
@@ -627,12 +641,12 @@ up_device_battery_update_info (UpDeviceBattery *self, UpBatteryInfo *info)
 static gboolean
 up_device_battery_charge_threshold_state_write(UpDeviceBattery *self, gboolean enabled, const gchar *state_file) {
 	g_autofree gchar *filename = NULL;
-	GError *error = NULL;
+	g_autoptr (GError) error = NULL;
 	const gchar *state_dir;
 
 	state_dir = up_device_battery_get_state_dir (self);
 	filename = g_build_filename (state_dir, state_file, NULL);
-	if (!g_file_set_contents (filename, enabled ? "1": "0" , -1, &error)) {
+	if (!g_file_set_contents_full (filename, enabled ? "1": "0" , -1, G_FILE_SET_CONTENTS_CONSISTENT, 0640, &error)) {
 		g_error ("failed to save battery charge threshold: %s", error->message);
 		return FALSE;
 	}

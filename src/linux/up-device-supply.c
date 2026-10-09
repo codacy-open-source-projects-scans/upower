@@ -265,8 +265,8 @@ up_device_supply_refresh_device (UpDeviceSupply *supply,
 
 	/* initial values */
 	if (!supply->priv->has_coldplug_values) {
-		gchar *model_name;
-		gchar *serial_number;
+		g_autofree gchar *model_name = NULL;
+		g_autofree gchar *serial_number = NULL;
 
 		/* get values which may be blank */
 		model_name = up_device_supply_get_string (native, "model_name");
@@ -286,14 +286,26 @@ up_device_supply_refresh_device (UpDeviceSupply *supply,
 
 		/* we only coldplug once, as these values will never change */
 		supply->priv->has_coldplug_values = TRUE;
-
-		g_free (model_name);
-		g_free (serial_number);
 	}
 
 	/* Some devices change whether they're present or not */
 	if (g_udev_device_has_sysfs_attr_uncached (native, "present"))
 		is_present = g_udev_device_get_sysfs_attr_as_boolean_uncached (native, "present");
+
+	/* Batteries reached over a wireless link report whether it is up */
+	if (g_udev_device_has_sysfs_attr_uncached (native, "online")) {
+		gboolean is_power_supply;
+
+		g_object_get (device, "power-supply", &is_power_supply, NULL);
+		if (!is_power_supply) {
+			gboolean disconnected_old, disconnected_new;
+
+			g_object_get (device, "disconnected", &disconnected_old, NULL);
+			disconnected_new = !g_udev_device_get_sysfs_attr_as_boolean_uncached (native, "online");
+			if (disconnected_old != disconnected_new)
+				g_object_set (device, "disconnected", disconnected_new, NULL);
+		}
+	}
 
 	/* get a precise percentage */
 	percentage = g_udev_device_get_sysfs_attr_as_double_uncached (native, "capacity");
@@ -336,9 +348,9 @@ up_device_supply_sibling_discovered_guess_type (UpDevice *device,
 	g_autoptr (GUdevDevice) parent_sibling = NULL;
 	UpDeviceKind cur_type, new_type;
 	gboolean is_same_parent = FALSE;
-	char *new_model_name;
-	char *model_name;
-	char *serial_number;
+	g_autofree gchar *new_model_name = NULL;
+	g_autofree gchar *model_name = NULL;
+	g_autofree gchar *serial_number = NULL;
 	int i;
 	struct {
 		const char *prop;
@@ -414,7 +426,6 @@ up_device_supply_sibling_discovered_guess_type (UpDevice *device,
 		g_object_set (device,
 			      "model", model_name,
 			      NULL);
-		g_free (model_name);
 	}
 
 	if (serial_number == NULL) {
@@ -423,7 +434,6 @@ up_device_supply_sibling_discovered_guess_type (UpDevice *device,
 		g_object_set (device,
 			      "serial", serial_number,
 			      NULL);
-		g_free (serial_number);
 	}
 
 	new_type = UP_DEVICE_KIND_UNKNOWN;
@@ -497,7 +507,6 @@ up_device_supply_sibling_discovered_guess_type (UpDevice *device,
 		} else {
 			g_object_set (device, "type", new_type, NULL);
 		}
-		g_free (new_model_name);
 	}
 }
 
@@ -549,7 +558,7 @@ static UpDeviceKind
 up_device_supply_guess_type (GUdevDevice *native,
 			     const char *native_path)
 {
-	gchar *device_type;
+	g_autofree gchar *device_type = NULL;
 	UpDeviceKind type = UP_DEVICE_KIND_UNKNOWN;
 
 	device_type = up_device_supply_get_string (native, "type");
@@ -587,7 +596,6 @@ up_device_supply_guess_type (GUdevDevice *native,
 	}
 
 out:
-	g_free (device_type);
 	return type;
 }
 

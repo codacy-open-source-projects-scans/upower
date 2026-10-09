@@ -79,10 +79,12 @@ cd contrib
   ```text
   === begin example commit ===
   short explanation of the commit  
-  
+
   Longer explanation explaining exactly what's changed, whether any
   external or private interfaces changed, what bugs were fixed (with bug
   tracker reference if applicable) and so forth. Be concise but not too brief.
+
+  Signed-off-by : Username <username@example.com>
   === end example commit ===
   ```
 

@@ -28,11 +28,11 @@
 #include <sys/time.h>
 #include <glib.h>
 #include <glib/gi18n-lib.h>
+#include <glib-unix.h>
 #include <locale.h>
 
 #include "upower.h"
 
-static GMainLoop *loop;
 static gboolean opt_monitor_detail = FALSE;
 
 /**
@@ -41,8 +41,8 @@ static gboolean opt_monitor_detail = FALSE;
 static gchar *
 up_tool_get_timestamp (void)
 {
-	gchar *str_time;
-	gchar *timestamp;
+	g_autofree gchar *str_time = NULL;
+	g_autofree gchar *timestamp = NULL;
 	time_t the_time;
 	struct timeval time_val;
 
@@ -53,8 +53,7 @@ up_tool_get_timestamp (void)
 
 	/* generate header text */
 	timestamp = g_strdup_printf ("%s.%03i", str_time, (gint) time_val.tv_usec / 1000);
-	g_free (str_time);
-	return timestamp;
+	return g_steal_pointer (&timestamp);
 }
 
 /**
@@ -63,16 +62,17 @@ up_tool_get_timestamp (void)
 static void
 up_tool_device_added_cb (UpClient *client, UpDevice *device, gpointer user_data)
 {
-	gchar *timestamp;
-	gchar *text = NULL;
+	g_autofree gchar *timestamp = NULL;
+	g_autofree gchar *text = NULL;
+	const gchar *object_path;
+
 	timestamp = up_tool_get_timestamp ();
-	g_print ("[%s]\tdevice added:     %s\n", timestamp, up_device_get_object_path (device));
+	object_path = up_device_get_object_path (device);
+	g_print ("[%s]\tdevice added:     %s\n", timestamp, object_path ? object_path : "unknown");
 	if (opt_monitor_detail) {
 		text = up_device_to_text (device);
-		g_print ("%s\n", text);
+		g_print ("%s\n", text ? text : "unknown");
 	}
-	g_free (timestamp);
-	g_free (text);
 }
 
 /**
@@ -81,17 +81,18 @@ up_tool_device_added_cb (UpClient *client, UpDevice *device, gpointer user_data)
 static void
 up_tool_device_changed_cb (UpDevice *device, GParamSpec *pspec, gpointer user_data)
 {
-	gchar *timestamp;
-	gchar *text = NULL;
+	g_autofree gchar *timestamp = NULL;
+	g_autofree gchar *text = NULL;
+	const gchar *object_path;
+
 	timestamp = up_tool_get_timestamp ();
-	g_print ("[%s]\tdevice changed:     %s\n", timestamp, up_device_get_object_path (device));
+	object_path = up_device_get_object_path (device);
+	g_print ("[%s]\tdevice changed:     %s\n", timestamp, object_path ? object_path : "unknown");
 	if (opt_monitor_detail) {
 		/* TODO: would be nice to just show the diff */
 		text = up_device_to_text (device);
-		g_print ("%s\n", text);
+		g_print ("%s\n", text ? text : "unknown");
 	}
-	g_free (timestamp);
-	g_free (text);
 }
 
 /**
@@ -100,12 +101,17 @@ up_tool_device_changed_cb (UpDevice *device, GParamSpec *pspec, gpointer user_da
 static void
 up_tool_device_removed_cb (UpClient *client, const char *object_path, gpointer user_data)
 {
-	gchar *timestamp;
+	g_autofree gchar *timestamp = NULL;
+
+	if (object_path == NULL) {
+		g_print ("Object path is NULL\n");
+		return;
+	}
+
 	timestamp = up_tool_get_timestamp ();
 	g_print ("[%s]\tdevice removed:   %s\n", timestamp, object_path);
 	if (opt_monitor_detail)
 		g_print ("\n");
-	g_free (timestamp);
 }
 
 /**
@@ -114,11 +120,11 @@ up_tool_device_removed_cb (UpClient *client, const char *object_path, gpointer u
 static void
 up_client_print (UpClient *client)
 {
-	gchar *daemon_version;
+	g_autofree gchar *daemon_version = NULL;
 	gboolean on_battery;
 	gboolean lid_is_closed;
 	gboolean lid_is_present;
-	char *action;
+	g_autofree gchar *action = NULL;
 
 	g_object_get (client,
 		      "daemon-version", &daemon_version,
@@ -127,15 +133,12 @@ up_client_print (UpClient *client)
 		      "lid-is-present", &lid_is_present,
 		      NULL);
 
-	g_print ("  daemon-version:  %s\n", daemon_version);
+	g_print ("  daemon-version:  %s\n", daemon_version ? daemon_version : "unknown");
 	g_print ("  on-battery:      %s\n", on_battery ? "yes" : "no");
 	g_print ("  lid-is-closed:   %s\n", lid_is_closed ? "yes" : "no");
 	g_print ("  lid-is-present:  %s\n", lid_is_present ? "yes" : "no");
 	action = up_client_get_critical_action (client);
-	g_print ("  critical-action: %s\n", action);
-	g_free (action);
-
-	g_free (daemon_version);
+	g_print ("  critical-action: %s\n", action ? action : "unknown");
 }
 
 /**
@@ -144,23 +147,23 @@ up_client_print (UpClient *client)
 static void
 up_tool_changed_cb (UpClient *client, GParamSpec *pspec, gpointer user_data)
 {
-	gchar *timestamp;
+	g_autofree gchar *timestamp = NULL;
+
 	timestamp = up_tool_get_timestamp ();
 	g_print ("[%s]\tdaemon changed:\n", timestamp);
 	if (opt_monitor_detail) {
 		up_client_print (client);
 		g_print ("\n");
 	}
-	g_free (timestamp);
 }
 
 /**
  * up_tool_do_monitor:
  **/
 static gboolean
-up_tool_do_monitor (UpClient *client)
+up_tool_do_monitor (UpClient *client, GMainLoop *loop)
 {
-	GPtrArray *devices;
+	g_autoptr (GPtrArray) devices = NULL;
 	guint i;
 
 	g_print ("Monitoring activity from the power daemon. Press Ctrl+C to cancel.\n");
@@ -170,6 +173,8 @@ up_tool_do_monitor (UpClient *client)
 	g_signal_connect (client, "notify", G_CALLBACK (up_tool_changed_cb), NULL);
 
 	devices = up_client_get_devices2 (client);
+	if (devices == NULL)
+		return FALSE;
 	for (i=0; i < devices->len; i++) {
 		UpDevice *device;
 		device = g_ptr_array_index (devices, i);
@@ -178,7 +183,7 @@ up_tool_do_monitor (UpClient *client)
 
 	g_main_loop_run (loop);
 
-	return FALSE;
+	return TRUE;
 }
 
 static void
@@ -193,6 +198,7 @@ up_tool_output_display_device (UpClient *client)
 {
 	g_autoptr (UpDevice) device = NULL;
 	g_autofree gchar *text = NULL;
+	const gchar *object_path;
 
 	device = up_client_get_display_device (client);
 	if (!device) {
@@ -200,9 +206,10 @@ up_tool_output_display_device (UpClient *client)
 		return 1;
 	}
 
-	g_print ("Device: %s\n", up_device_get_object_path (device));
+	object_path = up_device_get_object_path (device);
+	g_print ("Device: %s\n", object_path ? object_path : "unknown");
 	text = up_device_to_text (device);
-	g_print ("%s\n", text);
+	g_print ("%s\n", text ? text : "unknown");
 
 	return 0;
 }
@@ -212,14 +219,15 @@ up_tool_output_device_dump (UpClient *client, GList *device_filter)
 {
 	g_autoptr (GPtrArray) devices = NULL;
 	UpDevice *device;
+	const gchar *object_path;
 	guint i;
 	guint kind = 0;
 	gint ret = 0;
 	gchar *text = NULL;
 
 	devices = up_client_get_devices2 (client);
-	if (!devices) {
-		g_print ("Failed to get device list\n");
+	if (devices == NULL) {
+		g_print ("Failed to get devices\n");
 		return 1;
 	}
 
@@ -227,9 +235,10 @@ up_tool_output_device_dump (UpClient *client, GList *device_filter)
 		device = (UpDevice*) g_ptr_array_index (devices, i);
 		g_object_get (device, "kind", &kind, NULL);
 		if (g_list_find (device_filter, GINT_TO_POINTER (kind)) || device_filter == NULL) {
-			g_print ("Device: %s\n", up_device_get_object_path (device));
+			object_path = up_device_get_object_path (device);
+			g_print ("Device: %s\n", object_path ? object_path : "unknown");
 			text = up_device_to_text (device);
-			g_print ("%s\n", text);
+			g_print ("%s\n", text ? text : "unknown");
 			g_free (text);
 		}
 	}
@@ -248,12 +257,18 @@ up_tool_output_enumerate (UpClient *client)
 	g_autoptr (GPtrArray) devices = NULL;
 	g_autoptr (UpDevice) display_device = NULL;
 	UpDevice *device;
+	const gchar *object_path;
 	guint i;
 
 	devices = up_client_get_devices2 (client);
+	if (devices == NULL) {
+		g_print ("Failed to get devices\n");
+		return 1;
+	}
 	for (i = 0; i < devices->len; i++) {
 		device = (UpDevice*) g_ptr_array_index (devices, i);
-		g_print ("%s\n", up_device_get_object_path (device));
+		object_path = up_device_get_object_path (device);
+		g_print ("%s\n", object_path ? object_path : "unknown");
 	}
 
 	display_device = up_client_get_display_device (client);
@@ -261,8 +276,19 @@ up_tool_output_enumerate (UpClient *client)
 		g_print ("Failed to get display device\n");
 		return 1;
 	}
-	g_print ("%s\n", up_device_get_object_path (display_device));
+	object_path = up_device_get_object_path (display_device);
+	g_print ("%s\n", object_path ? object_path : "unknown");
 	return 0;
+}
+
+static gboolean
+up_tool_signal_cb (gpointer user_data)
+{
+	GMainLoop *loop = user_data;
+
+	g_debug ("Caught signal, exiting");
+	g_main_loop_quit (loop);
+	return G_SOURCE_REMOVE;
 }
 
 /**
@@ -271,21 +297,22 @@ up_tool_output_enumerate (UpClient *client)
 int
 main (int argc, char **argv)
 {
+	g_autoptr (GMainLoop) loop = NULL;
 	GOptionContext *context;
 	gboolean opt_battery = FALSE;
 	gboolean opt_dump = FALSE;
 	gboolean opt_enumerate = FALSE;
 	gboolean opt_monitor = FALSE;
-	gchar *opt_show_info = FALSE;
+	g_autofree gchar *opt_show_info = NULL;
 	gboolean opt_version = FALSE;
 	GList *device_filter = NULL;
 	gboolean ret;
 	gint retval;
 	GError *error = NULL;
-	gchar *text = NULL;
+	g_autofree gchar *text = NULL;
 
 	g_autoptr (UpClient) client = NULL;
-	UpDevice *device;
+	g_autoptr (UpDevice) device = NULL;
 
 	const GOptionEntry entries[] = {
 		{ "battery", 'b', 0, G_OPTION_ARG_NONE, &opt_battery, _("Dump all parameters for battery objects"), NULL },
@@ -313,7 +340,6 @@ main (int argc, char **argv)
 		return EXIT_FAILURE;
 	}
 
-	loop = g_main_loop_new (NULL, FALSE);
 	client = up_client_new_full (NULL, &error);
 	if (client == NULL) {
 		g_warning ("Cannot connect to upowerd: %s", error->message);
@@ -328,7 +354,7 @@ main (int argc, char **argv)
 			      NULL);
 		g_print ("UPower client version %s\n"
 			 "UPower daemon version %s\n",
-			 PACKAGE_VERSION, daemon_version);
+			 PACKAGE_VERSION, daemon_version ? daemon_version : "unknown");
 		return EXIT_SUCCESS;
 	}
 
@@ -347,7 +373,21 @@ main (int argc, char **argv)
 	}
 
 	if (opt_monitor || opt_monitor_detail) {
-		if (!up_tool_do_monitor (client))
+		loop = g_main_loop_new (NULL, FALSE);
+
+		g_unix_signal_add_full (G_PRIORITY_DEFAULT,
+					SIGINT,
+					up_tool_signal_cb,
+					loop,
+					NULL);
+
+		g_unix_signal_add_full (G_PRIORITY_DEFAULT,
+					SIGTERM,
+					up_tool_signal_cb,
+					loop,
+					NULL);
+
+		if (!up_tool_do_monitor (client, loop))
 			return EXIT_FAILURE;
 		return EXIT_SUCCESS;
 	}
@@ -360,10 +400,10 @@ main (int argc, char **argv)
 			g_error_free (error);
 		} else {
 			text = up_device_to_text (device);
-			g_print ("%s\n", text);
-			g_free (text);
+			g_print ("%s\n", text ? text : "unknown");
 		}
-		g_object_unref (device);
 		return EXIT_SUCCESS;
 	}
+
+	return EXIT_SUCCESS;
 }

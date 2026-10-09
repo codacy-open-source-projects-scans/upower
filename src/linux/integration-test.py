@@ -2734,6 +2734,54 @@ class Tests(dbusmock.DBusTestCase):
         with open("/sys/class/power_supply/BAT0/charge_control_end_threshold") as fp:
             self.assertEqual(fp.read(), "100")
 
+    def test_battery_charge_limit_live_sysfs_value(self):
+        """charge_control_end_threshold live value overrides the hwdb CHARGE_LIMIT default"""
+
+        self.testbed.add_device(
+            "power_supply",
+            "BAT0",
+            None,
+            [
+                "type",
+                "Battery",
+                "present",
+                "1",
+                "status",
+                "unknown",
+                "energy_full",
+                "60000000",
+                "energy_full_design",
+                "80000000",
+                "energy_now",
+                "48000000",
+                "voltage_now",
+                "12000000",
+                "charge_control_start_threshold",
+                "0",
+                "charge_control_end_threshold",
+                "85",
+            ],
+            [],
+        )
+        self.testbed.set_property(
+            "/sys/class/power_supply/BAT0", "CHARGE_LIMIT", "75,80"
+        )
+
+        self.start_daemon()
+        devs = self.proxy.EnumerateDevices()
+        self.assertEqual(len(devs), 1)
+        bat0_up = devs[0]
+
+        self.assertEqual(
+            self.get_dbus_dev_property(bat0_up, "ChargeThresholdSupported"), True
+        )
+        self.assertEqual(
+            self.get_dbus_dev_property(bat0_up, "ChargeStartThreshold"), 75
+        )
+        self.assertEqual(self.get_dbus_dev_property(bat0_up, "ChargeEndThreshold"), 85)
+
+        self.stop_daemon()
+
     def test_battery_charge_limit_supported_polkit_not_allowed(self):
         """Battery with charge_control_start/end_threshold supported"""
 
@@ -3707,6 +3755,64 @@ class Tests(dbusmock.DBusTestCase):
 
         self.stop_daemon()
 
+    def test_history_zero_resolution_no_crash(self):
+        """GetHistory with resolution=0 should not crash the daemon (FPE fix)"""
+
+        self.testbed.add_device(
+            "power_supply",
+            "BAT0",
+            None,
+            [
+                "type",
+                "Battery",
+                "present",
+                "1",
+                "status",
+                "Discharging",
+                "energy_full",
+                "60000000",
+                "energy_full_design",
+                "80000000",
+                "energy_now",
+                "50000000",
+                "voltage_now",
+                "12000000",
+            ],
+            [],
+        )
+
+        self.start_daemon()
+
+        devs = self.proxy.EnumerateDevices()
+        self.assertEqual(len(devs), 1)
+        bat0_up = devs[0]
+
+        # Allow the initial cold-plug to populate history data
+        time.sleep(0.5)
+
+        # Before the fix, resolution=0 would cause integer division by zero
+        # (SIGFPE) inside up_history_array_limit_resolution, crashing the daemon.
+        result = self.dbus.call_sync(
+            UP,
+            bat0_up,
+            UP_DEVICE,
+            "GetHistory",
+            GLib.Variant("(suu)", ("charge", 0, 0)),
+            GLib.VariantType.new("(a(udu))"),
+            Gio.DBusCallFlags.NO_AUTO_START,
+            -1,
+            None,
+        )
+
+        history_data = result.unpack()[0]
+        self.assertEqual(len(history_data), 0)
+
+        # Verify the daemon is still responsive after the call
+        devs_after = self.proxy.EnumerateDevices()
+        self.assertEqual(len(devs_after), 1)
+
+        self.stop_daemon()
+
     def test_battery_id_change(self):
         """check that we save/load the history correctly when the ID changes"""
 
@@ -4023,6 +4129,64 @@ class Tests(dbusmock.DBusTestCase):
 
         devs = self.proxy.EnumerateDevices()
         self.assertEqual(len(devs), 1)
+
+        self.stop_daemon()
+
+    def test_several_batteries_one_device(self):
+        """A device with one battery per part keeps all of them"""
+
+        dev = self.testbed.add_device(
+            "usb", "/devices/pci0000:00/0000:00:14.0/usb3/3-3", None, [], []
+        )
+
+        parent = dev
+        self.testbed.add_device(
+            "input",
+            "/devices/pci0000:00/0000:00:14.0/usb3/3-3/3-3:1.2/0003:1D50:615E.0010/input/input22",
+            parent,
+            ["name", "Split Keyboard", "uniq", "07981C2CF14C4119"],
+            ["ID_INPUT", "1", "ID_INPUT_KEYBOARD", "1"],
+        )
+
+        # The second part has not reported yet, so its state is unknown.
+        for report_id, status, capacity in (
+            ("5", "Discharging", "51"),
+            ("6", "Unknown", "25"),
+        ):
+            self.testbed.add_device(
+                "power_supply",
+                "/devices/pci0000:00/0000:00:14.0/usb3/3-3/3-3:1.2/0003:1D50:615E.0010"
+                "/power_supply/hid-07981C2CF14C4119-battery-" + report_id,
+                parent,
+                [
+                    "type",
+                    "Battery",
+                    "scope",
+                    "Device",
+                    "present",
+                    "1",
+                    "status",
+                    status,
+                    "capacity",
+                    capacity,
+                    "model_name",
+                    "Split Keyboard",
+                ],
+                [],
+            )
+
+        self.start_daemon()
+
+        devs = self.proxy.EnumerateDevices()
+        self.assertEqual(len(devs), 2)
+
+        percentages = set()
+        for dev_up in devs:
+            self.assertEqual(
+                self.get_dbus_dev_property(dev_up, "Serial"), "07981C2CF14C4119"
+            )
+            percentages.add(self.get_dbus_dev_property(dev_up, "Percentage"))
+        self.assertEqual(percentages, {51.0, 25.0})
 
         self.stop_daemon()
 
@@ -5133,6 +5297,61 @@ class Tests(dbusmock.DBusTestCase):
         time.sleep(0.5)
         return self.proxy.EnumerateDevices()
 
+    def test_bluetooth_daemon_restart(self):
+        """All Bluetooth batteries disappear and return across BlueZ restart"""
+
+        def add_devices():
+            self.start_bluez()
+            self.bluez_obj.AddAdapter("hci0", "my-computer")
+            for suffix in ("01", "02", "03"):
+                path = self.bluez_obj.AddDevice(
+                    "hci0", "11:22:33:44:AA:" + suffix, "Mouse " + suffix
+                )
+                device = self.dbus_con.get_object("org.bluez", path)
+                device.AddProperties(
+                    BATTERY_IFACE, {"Percentage": dbus.Byte(70, variant_level=1)}
+                )
+
+        add_devices()
+        self.start_daemon()
+        self.assertEventually(lambda: len(self.proxy.EnumerateDevices()), value=3)
+        original_paths = set(self.proxy.EnumerateDevices())
+
+        # Drop/reacquire the name with an initialized mock. Starting another
+        # mock process while UPower watches races the template installation.
+        owner = self.dbus_con.get_name_owner("org.bluez")
+        mock = dbus.Interface(self.dbus_con.get_object(owner, "/"), dbusmock.MOCK_IFACE)
+        mock.AddMethods(
+            dbusmock.MOCK_IFACE,
+            [
+                (
+                    "ReleaseName",
+                    "",
+                    "",
+                    'self.bus_name.get_bus().release_name("org.bluez")',
+                ),
+                (
+                    "AcquireName",
+                    "",
+                    "",
+                    'self.bus_name.get_bus().request_name("org.bluez")',
+                ),
+            ],
+        )
+        mock.ReleaseName()
+        self.assertEventually(lambda: list(self.proxy.EnumerateDevices()), value=[])
+        for path in original_paths:
+            with self.assertRaises(GLib.Error):
+                self.get_dbus_dev_property(path, "Percentage")
+
+        mock.AcquireName()
+        self.assertEventually(
+            lambda: set(self.proxy.EnumerateDevices()), value=original_paths
+        )
+        for path in original_paths:
+            self.assertEqual(self.get_dbus_dev_property(path, "Percentage"), 70.0)
+        self.stop_daemon()
+
     def test_bluetooth_le_mouse(self):
         """Bluetooth LE mouse"""
 
@@ -6177,6 +6396,146 @@ class Tests(dbusmock.DBusTestCase):
         os.unlink(config.name)
         os.rmdir(conf_d_dir_path)
         os.rmdir(base_dir.name)
+
+    def test_multiple_batteries_with_incorrect_energy_full_issue336(self):
+        """
+        Report energy_full=0 for a battery.
+        energy_full_design is used when energy_full is 0.
+        """
+
+        self.testbed.add_device(
+            "power_supply",
+            "BAT0",
+            None,
+            [
+                "type",
+                "Battery",
+                "present",
+                "1",
+                "status",
+                "Discharging",
+                "energy_full",
+                "80000000",
+                "energy_full_design",
+                "80000000",
+                "energy_now",
+                "14000000",
+                "power_now",
+                "14000000",
+                "voltage_now",
+                "12000000",
+                "capacity",
+                "40",
+            ],
+            [],
+        )
+
+        self.testbed.add_device(
+            "power_supply",
+            "BAT1",
+            None,
+            [
+                "type",
+                "Battery",
+                "present",
+                "1",
+                "status",
+                "Discharging",
+                "energy_full",
+                "0",
+                "energy_full_design",
+                "80000000",
+                "energy_now",
+                "14000000",
+                "power_now",
+                "14000000",
+                "voltage_now",
+                "12000000",
+                "capacity",
+                "60",
+            ],
+            [],
+        )
+
+        self.start_daemon(warns=True)
+        devs = self.proxy.EnumerateDevices()
+        self.assertEqual(len(devs), 2)
+
+        # BAT0: energy_full=80 Wh, energy_now=14 Wh
+        # BAT1: energy_full=0 -> fallback to energy_full_design=80 Wh, energy_now=14 Wh
+        # percentage = 100 * (14 + 14) / (80 + 80) = 17.5%
+        self.assertAlmostEqual(self.get_dbus_display_property("Percentage"), 17.5)
+        self.stop_daemon()
+
+    def test_multiple_batteries_time_to_empty_with_incorrect_energy_full_issue336(self):
+        """
+        Report energy_full=0 for a battery.
+        UPower tries to estimate TimeToEmpty based on the energy_full_design value.
+        """
+
+        self.testbed.add_device(
+            "power_supply",
+            "BAT0",
+            None,
+            [
+                "type",
+                "Battery",
+                "present",
+                "1",
+                "status",
+                "Discharging",
+                "energy_full",
+                "80000000",
+                "energy_full_design",
+                "80000000",
+                "energy_now",
+                "14000000",
+                "power_now",
+                "7000000",
+                "voltage_now",
+                "12000000",
+                "capacity",
+                "40",
+            ],
+            [],
+        )
+
+        self.testbed.add_device(
+            "power_supply",
+            "BAT1",
+            None,
+            [
+                "type",
+                "Battery",
+                "present",
+                "1",
+                "status",
+                "Discharging",
+                "energy_full",
+                "0",
+                "energy_full_design",
+                "80000000",
+                "energy_now",
+                "14000000",
+                "power_now",
+                "7000000",
+                "voltage_now",
+                "12000000",
+                "capacity",
+                "60",
+            ],
+            [],
+        )
+
+        self.start_daemon(warns=True)
+        devs = self.proxy.EnumerateDevices()
+        self.assertEqual(len(devs), 2)
+
+        # energy_total = 14.0 + 14.0 = 28.0 (Wh)
+        # energy_rate_total = 7.0 + 7.0 = 14.0 (W)
+        # time_to_empty = SECONDS_PER_HOUR * (28.0 / 14.0) = 7200
+        self.assertEqual(self.get_dbus_display_property("TimeToEmpty"), 7200)
+        self.stop_daemon()
 
     #
     # Helper methods

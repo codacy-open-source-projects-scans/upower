@@ -1,5 +1,5 @@
 project('upower', 'c',
-    version: '1.91.2',
+    version: '1.91.5',
     license: 'GPLv2+',
     default_options: [
         'buildtype=debugoptimized',
@@ -139,7 +139,9 @@ subdir('src')
 subdir('tools')
 subdir('doc')
 subdir('data/zsh-completion')
-subdir('policy')
+if polkit.found()
+    subdir('policy')
+endif
 
 pkgconfig = import('pkgconfig')
 pkgconfig.generate(

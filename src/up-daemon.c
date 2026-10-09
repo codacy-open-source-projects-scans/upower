@@ -63,6 +63,9 @@ struct UpDaemonPrivate
 	gint64			 time_to_empty;
 	gint64			 time_to_full;
 
+	/* Composite keyboard backlight properties */
+	UpDeviceKbdBacklight	*display_kbd_backlight_device;
+
 	gboolean		 charge_threshold_enabled;
 	gboolean		 state_all_discharging;
 
@@ -363,6 +366,55 @@ out:
 }
 
 /**
+ * up_daemon_kbd_backlight_composite_update:
+ *
+ * Recompute the composite keyboard backlight brightness from the
+ * underlying physical devices and update the display device.
+ *
+ * Returns: %TRUE on success.
+ **/
+gboolean
+up_daemon_kbd_backlight_composite_update (UpDaemon *daemon, gboolean composite_signal)
+{
+	GPtrArray *array;
+	gint composite_brightness = -1;
+	gint lowest_max_brightness = G_MAXINT;
+
+	array = up_device_list_get_array (daemon->priv->kbd_backlight_devices);
+	for (guint i = 0; i < array->len; i++) {
+		UpDeviceKbdBacklight *kbd_device;
+		gint max_brightness = -1;
+		gint brightness = -1;
+
+		kbd_device = UP_DEVICE_KBD_BACKLIGHT (g_ptr_array_index (array, i));
+
+		g_object_get (kbd_device, "max-brightness", &max_brightness,
+			      "brightness", &brightness,
+			      NULL);
+
+		if (max_brightness >= 0 && max_brightness < lowest_max_brightness) {
+			lowest_max_brightness = max_brightness;
+			/* Use the brightness of the device with the lowest max_brightness */
+			composite_brightness = brightness;
+		}
+	}
+
+	g_ptr_array_unref (array);
+
+	g_object_set (daemon->priv->display_kbd_backlight_device,
+		      "max-brightness", lowest_max_brightness == G_MAXINT ? 0 : lowest_max_brightness,
+		      "brightness", composite_brightness >= 0 ? composite_brightness : 0,
+		      NULL);
+
+	if (composite_signal)
+		up_device_kbd_backlight_emit_change (daemon->priv->display_kbd_backlight_device,
+						     composite_brightness >= 0 ? composite_brightness : 0,
+						     "internal");
+
+	return TRUE;
+}
+
+/**
  * up_daemon_get_warning_level_local:
  *
  * As soon as _all_ batteries are low, external power is not available or not charging at least one battery, this is true
@@ -639,6 +691,7 @@ up_daemon_shutdown (UpDaemon *daemon)
 
 	/* release UpDaemon reference */
 	g_object_run_dispose (G_OBJECT (daemon->priv->display_device));
+	g_object_run_dispose (G_OBJECT (daemon->priv->display_kbd_backlight_device));
 }
 
 /**
@@ -1127,7 +1180,14 @@ up_daemon_device_added_cb (UpBackend *backend, GObject *device, UpDaemon *daemon
 				 up_exported_kbd_backlight_get_native_path (UP_EXPORTED_KBD_BACKLIGHT (device)));
 			return;
 		}
+
+		/* Expose the composite display keyboard backlight device once the
+		 * first real keyboard backlight device appears */
+		if (up_device_list_get_length (priv->kbd_backlight_devices) == 0)
+			up_device_kbd_backlight_register (priv->display_kbd_backlight_device);
+
 		up_device_list_insert (priv->kbd_backlight_devices, G_OBJECT (device));
+		up_daemon_kbd_backlight_composite_update (daemon, FALSE);
 		up_exported_daemon_emit_device_added (UP_EXPORTED_DAEMON (daemon), object_path);
 	}
 }
@@ -1136,7 +1196,7 @@ up_daemon_device_added_cb (UpBackend *backend, GObject *device, UpDaemon *daemon
  * up_daemon_device_removed_cb:
  **/
 static void
-up_daemon_device_removed_cb (UpBackend *backend, UpDevice *device, UpDaemon *daemon)
+up_daemon_device_removed_cb (UpBackend *backend, GObject *device, UpDaemon *daemon)
 {
 	const gchar *object_path;
 	UpDaemonPrivate *priv = daemon->priv;
@@ -1150,7 +1210,7 @@ up_daemon_device_removed_cb (UpBackend *backend, UpDevice *device, UpDaemon *dae
 	if (UP_IS_DEVICE (device)) {
 		/* remove from list (device remains valid during the function call) */
 		up_device_list_remove (priv->power_devices, device);
-		object_path = up_device_get_object_path (device);
+		object_path = up_device_get_object_path (UP_DEVICE (device));
 	} else if (UP_IS_DEVICE_KBD_BACKLIGHT (device)) {
 		/* remove from list (device remains valid during the function call) */
 		up_device_list_remove (priv->kbd_backlight_devices, device);
@@ -1161,16 +1221,27 @@ up_daemon_device_removed_cb (UpBackend *backend, UpDevice *device, UpDaemon *dae
 
 	/* don't crash the session */
 	if (object_path == NULL) {
-		g_debug ("not emitting device-removed for unregistered device: %s",
-			 up_exported_device_get_native_path (UP_EXPORTED_DEVICE (device)));
+		if (UP_IS_DEVICE (device))
+			g_debug ("not emitting device-removed for unregistered device: %s",
+				 up_exported_device_get_native_path (UP_EXPORTED_DEVICE (device)));
+		else
+			g_debug ("not emitting device-removed for unregistered kbd backlight: %s",
+				 up_exported_kbd_backlight_get_native_path (UP_EXPORTED_KBD_BACKLIGHT (device)));
 		return;
 	}
 	g_debug ("emitting device-removed: %s", object_path);
 	up_exported_daemon_emit_device_removed (UP_EXPORTED_DAEMON (daemon), object_path);
 
 	/* Unregister keyboard backlight dbus path */
-	if (UP_IS_DEVICE_KBD_BACKLIGHT (device))
+	if (UP_IS_DEVICE_KBD_BACKLIGHT (device)) {
 		up_device_kbd_backlight_unregister (UP_DEVICE_KBD_BACKLIGHT (device));
+
+		/* Unregister the display keyboard backlight device if no other keyboard backlight devices are present */
+		if (up_device_list_get_length (daemon->priv->kbd_backlight_devices) == 0)
+			up_device_kbd_backlight_unregister (daemon->priv->display_kbd_backlight_device);
+		else
+			up_daemon_kbd_backlight_composite_update (daemon, TRUE);
+	}
 
 	/* In case a battery was removed */
 	up_daemon_refresh_battery_devices (daemon);
@@ -1235,6 +1306,7 @@ up_daemon_init (UpDaemon *daemon)
 	daemon->priv->kbd_backlight_devices = up_device_list_new ();
 	daemon->priv->display_device = up_device_new (daemon, NULL);
 	daemon->priv->poll_source = g_source_new (&poll_source_funcs, sizeof (GSource));
+	daemon->priv->display_kbd_backlight_device = up_device_kbd_backlight_new (daemon, NULL, daemon->priv->kbd_backlight_devices);
 
 	g_source_set_callback (daemon->priv->poll_source, NULL, daemon, NULL);
 	g_source_set_name (daemon->priv->poll_source, "up-device-poll");
@@ -1319,6 +1391,7 @@ up_daemon_finalize (GObject *object)
 	g_clear_pointer (&daemon->priv->poll_source, g_source_destroy);
 
 	g_object_unref (priv->power_devices);
+	g_object_unref (priv->display_kbd_backlight_device);
 	g_object_unref (priv->kbd_backlight_devices);
 	g_object_unref (priv->display_device);
 	g_object_unref (priv->polkit);

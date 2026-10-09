@@ -1,3 +1,38 @@
+Version 1.91.5
+--------------
+Released: 2026-10-05
+
+- Fix: Prefer live sysfs threshold values over hwdb CHARGE_LIMIT (!346, #350)
+- Fix: Keep keyboard backlight event IO active on ENODATA/EINTR (!347, #358)
+- Fix: Hide device batteries that report being offline (!345)
+- Fix: Remove all BlueZ devices when the service vanishes (!343)
+
+Version 1.91.4
+--------------
+Released: 2026-09-10
+
+- Feature: Composite keyboard backlight device for unified brightness control (!341, !335)
+- Fix: Fix potential segmentation fault of the upower command (!340, #354)
+- Fix: Avoid updating full capacity from impossible charge-readings (!338, #351)
+- Fix: Stop I/O watch on keyboard backlight read error (!341)
+- Fix: Fallback to energy_full_design when energy_full is invalid (!333, !302, #336)
+- Fix: Fix up-version dupe warning while generating docs (!336)
+- Fix: Keep every battery of a device that has several (!337, #348)
+- Fix: Don't install polkit policy files when it is disabled (!342, #356)
+- Translation: Update Georgian translation (!332)
+
+Version 1.91.3
+--------------
+Released: 2026-07-02
+
+- Feature: up-device-battery: Prefer "Standard" over "Fast" charging (!316, #344)
+- Fix: Resolve potential leaks (!327)
+- Fix: Potential out-of-bound access (!328)
+- Fix: Improve access control (!326)
+- Fix: Remove unused codes (!329)
+- Fix: Fix for Asus Battery Charge Threshold Detection (!330, #347)
+- CI: code refactoring (!324)
+
 Version 1.91.2
 --------------
 Released: 2026-04-01

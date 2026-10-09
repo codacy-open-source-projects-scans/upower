@@ -23,6 +23,7 @@
 
 #include <glib.h>
 #include <glib/gi18n.h>
+#include <glib/gstdio.h>
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <fcntl.h>
@@ -40,7 +41,7 @@ static void     up_kbd_backlight_led_finalize   (GObject	*object);
 struct UpKbdBacklightLedPrivate
 {
 	gint			 max_brightness;
-	guint			 brightness;
+	gint			 brightness;
 
 	gint			 fd_hw_changed;
 	GIOChannel		*channel_hw_changed;
@@ -179,9 +180,9 @@ up_kbd_backlight_led_event_io (GIOChannel *channel, GIOCondition condition, gpoi
 	UpDeviceKbdBacklight *kbd_backlight = UP_DEVICE_KBD_BACKLIGHT (data);
 	UpKbdBacklightLed *kbd = UP_KBD_BACKLIGHT_LED (kbd_backlight);
 	UpKbdBacklightLedPrivate *priv = up_kbd_backlight_led_get_instance_private (kbd);
-	gint brightness = 0;
+	gint brightness = -1;
+	gint errsv = 0;
 	gchar buf[16];
-	g_autofree gchar *ret_str = NULL;
 	glong len;
 	gchar *end = NULL;
 
@@ -192,9 +193,21 @@ up_kbd_backlight_led_event_io (GIOChannel *channel, GIOCondition condition, gpoi
 		return FALSE;
 
 	lseek (priv->fd_hw_changed, 0, SEEK_SET);
-	len = read (priv->fd_hw_changed, buf, G_N_ELEMENTS (buf) - 1);
 
-	if (len > 0) {
+	errno = 0;
+	len = read (priv->fd_hw_changed, buf, G_N_ELEMENTS (buf) - 1);
+	errsv = errno;
+
+	if (len == 0) {
+		return TRUE;
+	} else if (len < 0) {
+		if (errsv == EINTR || errsv == ENODATA) {
+			return TRUE;
+		} else {
+			g_warning ("kbd eventio: failed to read brightness. %s", g_strerror (errsv));
+			return FALSE;
+		}
+	} else {
 		buf[len] = '\0';
 		g_strstrip (buf);
 		brightness = g_ascii_strtoll (buf, &end, 10);
@@ -211,8 +224,8 @@ up_kbd_backlight_led_event_io (GIOChannel *channel, GIOCondition condition, gpoi
 	if (brightness < 0)
 		return FALSE;
 
-	if (brightness >= 0)
-		up_device_kbd_backlight_emit_change (kbd_backlight, brightness, "internal");
+	up_device_kbd_backlight_emit_change (kbd_backlight, brightness, "internal");
+	up_device_kbd_backlight_report (kbd_backlight, priv->max_brightness, brightness, TRUE);
 
 	return TRUE;
 }
@@ -229,6 +242,7 @@ up_kbd_backlight_led_coldplug (UpDeviceKbdBacklight *kbd_backlight)
 	UpKbdBacklightLedPrivate *priv;
 	GObject *native;
 	g_autofree gchar *filename = NULL;
+	g_autofree gchar *filename_brightness = NULL;
 	g_autofree gchar *path_hw_changed = NULL;
 	const gchar *native_path = NULL;
 
@@ -248,14 +262,19 @@ up_kbd_backlight_led_coldplug (UpDeviceKbdBacklight *kbd_backlight)
 
 	priv->max_brightness = up_kbd_backlight_led_brightness_read (kbd_backlight, filename);
 
+	filename_brightness = g_build_filename (native_path, "brightness", NULL);
+	priv->brightness = up_kbd_backlight_led_brightness_read (kbd_backlight, filename_brightness);
+
 	/* Set up device watcher */
 	path_hw_changed = g_build_filename (native_path, "brightness_hw_changed", NULL);
-	priv->fd_hw_changed = open (path_hw_changed, O_RDONLY);
+	priv->fd_hw_changed = g_open (path_hw_changed, O_RDONLY);
 	if (priv->fd_hw_changed >= 0) {
 		priv->channel_hw_changed = g_io_channel_unix_new (priv->fd_hw_changed);
 		g_io_add_watch (priv->channel_hw_changed,
 				G_IO_PRI, up_kbd_backlight_led_event_io, kbd_backlight);
 	}
+
+	up_device_kbd_backlight_report (kbd_backlight, priv->max_brightness, priv->brightness, FALSE);
 
 	return TRUE;
 }
@@ -311,13 +330,4 @@ static void
 up_kbd_backlight_led_init (UpKbdBacklightLed *kbd_backlight)
 {
 	kbd_backlight->priv = up_kbd_backlight_led_get_instance_private (kbd_backlight);
-}
-
-/**
- * up_kbd_backlight_led_new:
- **/
-UpKbdBacklightLed *
-up_kbd_backlight_led_new (void)
-{
-	return g_object_new (UP_TYPE_KBD_BACKLIGHT_LED, NULL);
 }

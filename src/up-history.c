@@ -57,11 +57,6 @@ struct UpHistoryPrivate
 	gchar			*dir;
 };
 
-enum {
-	UP_HISTORY_PROGRESS,
-	UP_HISTORY_LAST_SIGNAL
-};
-
 G_DEFINE_TYPE_WITH_PRIVATE (UpHistory, up_history, G_TYPE_OBJECT)
 
 /**
@@ -133,6 +128,9 @@ up_history_array_limit_resolution (GPtrArray *array, guint max_num)
 
 	new = g_ptr_array_new_with_free_func ((GDestroyNotify) g_object_unref);
 	g_debug ("length of array (before) %i", array->len);
+
+	if (max_num == 0)
+		return new;
 
 	/* check length */
 	length = array->len;
@@ -218,7 +216,7 @@ up_history_copy_array_timespan (const GPtrArray *array, guint timespan)
 	}
 
 	/* new data */
-	array_new = g_ptr_array_new ();
+	array_new = g_ptr_array_new_with_free_func ((GDestroyNotify) g_object_unref);
 	time_now = g_get_real_time ();
 	g_debug ("limiting data to last %i seconds", timespan);
 
@@ -471,7 +469,7 @@ up_history_array_to_file (UpHistory *history, GPtrArray *list, const gchar *file
 	}
 
 	/* save to disk */
-	ret = g_file_set_contents (filename, part, -1, &error);
+	ret = g_file_set_contents_full (filename, part, -1, G_FILE_SET_CONTENTS_CONSISTENT, 0640, &error);
 	if (!ret) {
 		g_warning ("failed to set data: %s", error->message);
 		g_error_free (error);

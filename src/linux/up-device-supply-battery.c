@@ -71,16 +71,11 @@ struct _UpDeviceSupplyBattery
 {
 	UpDeviceBattery		 parent;
 	gboolean		 has_coldplug_values;
-	gboolean		 coldplug_units;
-	gdouble			*energy_old;
-	guint			 energy_old_first;
-	gdouble			 rate_old;
 	guint			 supported_charge_types;
-	UpDeviceSupplyBatteryChargeTypes charge_type;
-	UpDeviceSupplyBatteryChargeThresholdSettings charge_threshold_settings;
 	gboolean		 charge_threshold_by_charge_type;
 	gboolean		 shown_invalid_voltage_warning;
 	gboolean		 ignore_system_percentage;
+	gboolean		 support_charge_limit;
 };
 
 G_DEFINE_TYPE (UpDeviceSupplyBattery, up_device_supply_battery, UP_TYPE_DEVICE_BATTERY)
@@ -172,12 +167,17 @@ up_device_supply_battery_convert_to_double (const gchar *str_value, gdouble *val
 }
 
 static gboolean
-up_device_supply_battery_get_charge_control_limits (GUdevDevice *native, UpBatteryInfo *info)
+up_device_supply_battery_get_charge_control_limits (UpDeviceSupplyBattery *self,
+						    GUdevDevice *native,
+						    UpBatteryInfo *info)
 {
 	const gchar *charge_limit;
 	g_auto(GStrv) pairs = NULL;
 	gdouble charge_control_start_threshold;
 	gdouble charge_control_end_threshold;
+
+	if (self->support_charge_limit)
+		return TRUE;
 
 	charge_limit = g_udev_device_get_property (native, "CHARGE_LIMIT");
 	if (charge_limit == NULL)
@@ -207,11 +207,22 @@ up_device_supply_battery_get_charge_control_limits (GUdevDevice *native, UpBatte
 
 	info->charge_control_start_threshold = charge_control_start_threshold;
 	info->charge_control_end_threshold = charge_control_end_threshold;
+	self->support_charge_limit = TRUE;
 
-	if (g_udev_device_has_sysfs_attr (native, "charge_control_start_threshold"))
+	/* Live sysfs values override CHARGE_LIMIT; 0 and 100 are the driver defaults */
+	if (g_udev_device_has_sysfs_attr (native, "charge_control_start_threshold")) {
+		gint value = g_udev_device_get_sysfs_attr_as_int_uncached (native, "charge_control_start_threshold");
+		if (value > 0 && value < 100)
+			info->charge_control_start_threshold = value;
 		info->charge_threshold_settings |= UP_DEVICE_SUPPLY_BATTERY_CHARGE_THRESHOLD_SETTINGS_CHARGE_CONTROL_START_THRESHOLD;
-	if (g_udev_device_has_sysfs_attr (native, "charge_control_end_threshold"))
+	}
+
+	if (g_udev_device_has_sysfs_attr (native, "charge_control_end_threshold")) {
+		gint value = g_udev_device_get_sysfs_attr_as_int_uncached (native, "charge_control_end_threshold");
+		if (value > 0 && value < 100)
+			info->charge_control_end_threshold = value;
 		info->charge_threshold_settings |= UP_DEVICE_SUPPLY_BATTERY_CHARGE_THRESHOLD_SETTINGS_CHARGE_CONTROL_END_THRESHOLD;
+	}
 
 	return TRUE;
 }
@@ -336,7 +347,6 @@ up_device_battery_get_supported_charge_types (UpDevice *device, UpBatteryInfo *i
 	for (int i = 0; i < g_strv_length(types); i++) {
 		if (g_utf8_strchr (types[i], 1, '[') != NULL) {
 			tmp_type = remove_brackets (types[i]);
-			self->charge_type = up_device_battery_charge_type_str_to_enum (tmp_type);
 		} else {
 			tmp_type = g_strdup (types[i]);
 		}
@@ -422,23 +432,28 @@ up_device_supply_battery_refresh (UpDevice *device,
 	info.voltage_design = up_device_supply_battery_get_design_voltage (self, native);
 	info.charge_cycles = g_udev_device_get_sysfs_attr_as_int_uncached (native, "cycle_count");
 
-	info.units = UP_BATTERY_UNIT_ENERGY;
-	info.energy.full = g_udev_device_get_sysfs_attr_as_double_uncached (native, "energy_full") / 1000000.0;
-	info.energy.design = g_udev_device_get_sysfs_attr_as_double_uncached (native, "energy_full_design") / 1000000.0;
-
-	/* Assume we couldn't read anything if energy.full is extremely small */
-	if (info.energy.full < 0.01) {
+	if (g_udev_device_has_sysfs_attr (native, "energy_full")) {
+		info.units = UP_BATTERY_UNIT_ENERGY;
+		info.energy.full = g_udev_device_get_sysfs_attr_as_double_uncached (native, "energy_full") / 1000000.0;
+		info.energy.design = g_udev_device_get_sysfs_attr_as_double_uncached (native, "energy_full_design") / 1000000.0;
+	} else if (g_udev_device_has_sysfs_attr (native, "charge_full")) {
 		info.units = UP_BATTERY_UNIT_CHARGE;
 		info.energy.full = g_udev_device_get_sysfs_attr_as_double_uncached (native, "charge_full") / 1000000.0;
 		info.energy.design = g_udev_device_get_sysfs_attr_as_double_uncached (native, "charge_full_design") / 1000000.0;
+	} else {
+		g_info ("energy_full and charge_full are not found, set energy_full to 0.0");
+		info.units = UP_BATTERY_UNIT_ENERGY;
+		info.energy.full = 0.0;
+		info.energy.design = 0.0;
 	}
+
 	technology = get_sysfs_attr_uncached (native, "technology");
 	info.technology = up_convert_device_technology (technology);
 
 	info.voltage_max_design = g_udev_device_get_sysfs_attr_as_double_uncached (native, "voltage_max_design") / 1000000.0;
 	info.voltage_min_design = g_udev_device_get_sysfs_attr_as_double_uncached (native, "voltage_min_design") / 1000000.0;
 
-	if (up_device_supply_battery_get_charge_control_limits (native, &info)) {
+	if (up_device_supply_battery_get_charge_control_limits (self, native, &info)) {
 		info.charge_control_supported = TRUE;
 		info.charge_control_enabled = FALSE;
 	} else {
